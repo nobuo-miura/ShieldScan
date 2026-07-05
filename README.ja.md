@@ -1,5 +1,7 @@
 # ShieldScan
 
+[English](README.md) | [日本語](README.ja.md)
+
 URLのHTTPレスポンスヘッダーを解析し、セキュリティスコアとグレードを算出するWebツールです。  
 セキュリティヘッダーの評価に加え、CORS・JWT・SSL/TLS・Cookieの診断機能を備えています。
 

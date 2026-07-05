@@ -1,5 +1,7 @@
 # ShieldScan
 
+[English](README.md) | [日本語](README.ja.md)
+
 A web-based security scanning tool that analyzes HTTP response headers, scores them, and assigns a grade.
 In addition to security header evaluation, it provides diagnostics for CORS, JWT, SSL/TLS, and Cookies.
 
