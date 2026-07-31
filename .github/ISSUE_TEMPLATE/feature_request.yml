@@ -1,0 +1,30 @@
+name: Feature request / 機能要望
+description: Suggest a new scan type or improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve? / 解決したい課題
+      description: 機能そのものより、困っていることから書いてください。
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution / 提案する解決策
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered / 検討した代替案
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution / 貢献
+      options:
+        - label: I am willing to implement this / 自分で実装する意思があります

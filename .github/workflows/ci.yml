@@ -1,0 +1,166 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (Go)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: backend/go.mod
+          # 外部依存がゼロで go.sum が存在しないため、モジュールキャッシュは無効化する。
+          cache: false
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "以下のファイルが gofmt されていません:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      # スキャン処理は外部ホストへ実際に接続するため、
+      # テストはネットワークに依存しない範囲に限定している。
+      - name: go test
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out | tail -1 >> "$GITHUB_STEP_SUMMARY"
+
+  lint:
+    name: Backend lint (golangci-lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12
+          working-directory: backend
+
+  frontend:
+    name: Frontend (Node)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+  docker:
+    name: Docker Compose build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: docker compose build
+        run: docker compose build
+
+      # バックエンドはホストに公開していないため、直接 :8080 は叩けない。
+      # compose のヘルスチェック完了を --wait で待ち、あとは nginx 経由で確認する。
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! docker compose up -d --wait; then
+            echo "起動しませんでした。ログ:"
+            docker compose logs
+            exit 1
+          fi
+
+          # ステータスコードと本文を分けて検証する。
+          # curl -f は 4xx で本文を捨てて終了コード22になるため、
+          # エラー応答を期待する検査では使えない（SSRF拒否は 400 を返す）。
+          check() {
+            local name=$1 want_status=$2 want_body=$3
+            shift 3
+            local status
+            # 接続自体に失敗した場合は curl が非ゼロで終了し status は 000 になる。
+            # set -e で即死せず、下のメッセージを出せるように || true で受ける。
+            status=$(curl -sS -o /tmp/smoke.out -w '%{http_code}' "$@" || true)
+            if [ "$status" != "$want_status" ]; then
+              echo "FAIL: $name — status $status, want $want_status"
+              cat /tmp/smoke.out
+              docker compose logs
+              exit 1
+            fi
+            if [ -n "$want_body" ] && ! grep -q "$want_body" /tmp/smoke.out; then
+              echo "FAIL: $name — 本文に $want_body が含まれません"
+              cat /tmp/smoke.out
+              docker compose logs
+              exit 1
+            fi
+            echo "ok: $name"
+          }
+
+          check "frontend が配信される" 200 "" http://localhost:3000/
+
+          check "nginx 経由でAPIに到達できる" 200 '"findings"' \
+            -X POST http://localhost:3000/api/jwt \
+            -H 'Content-Type: application/json' \
+            -d '{"token":"eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxIn0."}'
+
+          check "SSRF防御がコンテナ内でも効く" 400 'not allowed' \
+            -X POST http://localhost:3000/api/analyze \
+            -H 'Content-Type: application/json' \
+            -d '{"url":"http://169.254.169.254/"}'
+
+          echo "--- バックエンドがホストに露出していないか ---"
+          if curl -sS -o /dev/null --max-time 5 http://localhost:8080/health; then
+            echo "FAIL: バックエンドに直接到達できます。"
+            echo "X-Forwarded-For を詐称してレート制限を回避されるため、"
+            echo "docker-compose.yml では ports ではなく expose を使ってください。"
+            exit 1
+          fi
+          echo "ok: バックエンドは非公開"
+
+          echo "smoke test passed"
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

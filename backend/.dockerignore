@@ -1,0 +1,9 @@
+# ホスト側でビルドしたバイナリや成果物を持ち込まない。
+/server
+*.test
+*.out
+coverage.*
+.env
+Dockerfile
+.dockerignore
+.DS_Store

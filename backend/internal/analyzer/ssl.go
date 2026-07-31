@@ -3,13 +3,20 @@
 package analyzer
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"net"
 	"strings"
 	"time"
+
+	"github.com/nobuo-miura/shieldscan/internal/safehttp"
 )
+
+// legacyProbeTimeout は TLS 1.0/1.1 受け入れ確認（[checkLegacyTLS]）用の
+// 短めのタイムアウトです。2バージョン分を順に試すため本体より短くしています。
+const legacyProbeTimeout = 5 * time.Second
 
 // SSLFinding はTLS/SSL診断で検出された1件の問題を表します。
 type SSLFinding struct {
@@ -61,7 +68,7 @@ type SSLResult struct {
 //
 // port が空の場合は "443" を使用します。
 // TLS接続自体に失敗した場合もエラーは返さず、ConnectError フィールドに格納した結果を返します。
-func CheckSSL(host, port string) (*SSLResult, error) {
+func CheckSSL(ctx context.Context, host, port string) (*SSLResult, error) {
 	if port == "" {
 		port = "443"
 	}
@@ -69,17 +76,18 @@ func CheckSSL(host, port string) (*SSLResult, error) {
 	findings := []SSLFinding{}
 
 	// Try modern TLS first
-	conf := &tls.Config{
-		ServerName:         host,
-		InsecureSkipVerify: false,
+	dialer := &tls.Dialer{
+		NetDialer: safehttp.NewDialer(scanTimeout),
+		// 古いTLSしか話せないサーバーの設定を「診断して報告する」のが目的なので、
+		// ここで MinVersion を上げて接続を拒否すると、本来検出したい問題が見えなくなる。
+		Config: &tls.Config{ //nolint:gosec // G402: 診断対象に接続するための意図的な MinVersion
+			ServerName:         host,
+			InsecureSkipVerify: false,
+			MinVersion:         tls.VersionTLS10,
+		},
 	}
 
-	conn, err := tls.DialWithDialer(
-		&net.Dialer{Timeout: 10 * time.Second},
-		"tcp",
-		net.JoinHostPort(host, port),
-		conf,
-	)
+	rawConn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
 	if err != nil {
 		return &SSLResult{
 			Host:         host,
@@ -89,7 +97,8 @@ func CheckSSL(host, port string) (*SSLResult, error) {
 			ResponseTime: time.Since(start).Milliseconds(),
 		}, nil
 	}
-	defer conn.Close()
+	conn := rawConn.(*tls.Conn)
+	defer func() { _ = conn.Close() }()
 
 	state := conn.ConnectionState()
 	elapsed := time.Since(start).Milliseconds()
@@ -204,7 +213,7 @@ func CheckSSL(host, port string) (*SSLResult, error) {
 	}
 
 	// Check TLS 1.0/1.1 separately (best-effort)
-	checkLegacyTLS(host, port, &findings)
+	checkLegacyTLS(ctx, host, port, &findings)
 
 	return &SSLResult{
 		Host:         host,
@@ -271,7 +280,7 @@ func checkWeakKey(cert *x509.Certificate, findings *[]SSLFinding) {
 // checkLegacyTLS はサーバーが廃止済みのTLS 1.0/1.1を受け入れるかをベストエフォートで確認します。
 // 接続成功＝レガシーバージョンを許容しているとみなし、high severity の finding を追加します。
 // InsecureSkipVerify を使用しているため、証明書の検証は行いません。
-func checkLegacyTLS(host, port string, findings *[]SSLFinding) {
+func checkLegacyTLS(ctx context.Context, host, port string, findings *[]SSLFinding) {
 	legacy := []struct {
 		version uint16
 		name    string
@@ -281,20 +290,22 @@ func checkLegacyTLS(host, port string, findings *[]SSLFinding) {
 	}
 
 	for _, l := range legacy {
-		conf := &tls.Config{
-			ServerName:         host,
-			InsecureSkipVerify: true,
-			MinVersion:         l.version,
-			MaxVersion:         l.version,
+		// 「サーバーが廃止済みプロトコルを受け入れるか」を確かめるのが目的なので、
+		// 意図的に古いバージョンを指定し、証明書検証も省略する。
+		// ここで見ているのはハンドシェイクの成否だけで、通信内容は一切読まない。
+		dialer := &tls.Dialer{
+			NetDialer: safehttp.NewDialer(legacyProbeTimeout),
+			Config: &tls.Config{
+				ServerName: host,
+				// ハンドシェイクが成立するかどうかだけを見ており、通信内容は一切読まない。
+				InsecureSkipVerify: true,      //nolint:gosec // G402: レガシーTLS受け入れ確認が目的
+				MinVersion:         l.version, //nolint:gosec // G402: 同上
+				MaxVersion:         l.version,
+			},
 		}
-		conn, err := tls.DialWithDialer(
-			&net.Dialer{Timeout: 5 * time.Second},
-			"tcp",
-			net.JoinHostPort(host, port),
-			conf,
-		)
+		conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 			*findings = append(*findings, SSLFinding{
 				Severity:    "high",
 				Title:       fmt.Sprintf("%s を受け入れています", l.name),

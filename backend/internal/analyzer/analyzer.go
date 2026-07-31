@@ -3,11 +3,33 @@
 package analyzer
 
 import (
-	"crypto/tls"
+	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/nobuo-miura/shieldscan/internal/safehttp"
+)
+
+// drainAndClose はレスポンスボディを読み捨ててから閉じます。
+// 本ツールはヘッダーしか見ないためボディは不要ですが、読み切らずに閉じると
+// TCP接続が再利用されず、連続スキャン時に接続を張り直す無駄が生じます。
+// 読み捨て量は上限を設け、巨大なレスポンスに付き合わないようにしています。
+func drainAndClose(resp *http.Response) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	_ = resp.Body.Close()
+}
+
+const (
+	// scanTimeout は外部ホストへの1リクエストあたりのタイムアウトです。
+	scanTimeout = 10 * time.Second
+	// maxRedirects は追跡するリダイレクトの最大回数です。
+	maxRedirects = 5
+	// userAgent はスキャン時に送出する User-Agent です。
+	// 対象サイトの管理者が正体とアクセス理由を特定できるようにしています。
+	userAgent = "ShieldScan/1.0 (+https://github.com/nobuo-miura/ShieldScan)"
 )
 
 // HeaderResult は1つのセキュリティヘッダーの解析結果を表します。
@@ -192,33 +214,24 @@ var rules = []headerRule{
 // 総合グレード（A+〜F）を付与した [AnalysisResult] を返します。
 //
 // タイムアウトは10秒、リダイレクトは最大5回まで追跡します。
-func Analyze(rawURL string) (*AnalysisResult, error) {
+// ctx をキャンセルすると進行中のリクエストも中断されます。
+func Analyze(ctx context.Context, rawURL string) (*AnalysisResult, error) {
 	start := time.Now()
 
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return fmt.Errorf("too many redirects")
-			}
-			return nil
-		},
-	}
+	// リダイレクト先も含め、接続直前に毎回IPを検査する SSRF 保護付きクライアント。
+	client := safehttp.NewClient(scanTimeout, maxRedirects)
 
-	req, err := http.NewRequest("GET", rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("invalid URL: %w", err)
 	}
-	req.Header.Set("User-Agent", "SecurityHeaderAnalyzer/1.0 (+https://github.com/nobuo-miura/shieldscan)")
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer drainAndClose(resp)
 
 	elapsed := time.Since(start).Milliseconds()
 	tlsEnabled := resp.TLS != nil
@@ -271,11 +284,11 @@ func Analyze(rawURL string) (*AnalysisResult, error) {
 //   - 60%以上 → C
 //   - 50%以上 → D
 //   - 50%未満 → F
-func calcGrade(score, max int) string {
-	if max == 0 {
+func calcGrade(score, maxScore int) string {
+	if maxScore == 0 {
 		return "F"
 	}
-	pct := float64(score) / float64(max) * 100
+	pct := float64(score) / float64(maxScore) * 100
 	switch {
 	case pct >= 90:
 		return "A+"

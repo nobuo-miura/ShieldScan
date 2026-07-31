@@ -3,10 +3,13 @@
 package analyzer
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/nobuo-miura/shieldscan/internal/safehttp"
 )
 
 // CORSTestResult は1つのCORSテストケースの結果を表します。
@@ -41,7 +44,7 @@ type CORSResult struct {
 //   - Nullオリジンバイパス: "null"オリジンが許可されるか
 //   - プレドメインマッチ: "evil-{ターゲットホスト}" が許可されるか（前方一致の検出）
 //   - ポストドメインマッチ: "{ターゲットホスト}.evil.com" が許可されるか（後方一致の検出）
-func ScanCORS(rawURL string) (*CORSResult, error) {
+func ScanCORS(ctx context.Context, rawURL string) (*CORSResult, error) {
 	start := time.Now()
 
 	type testCase struct {
@@ -79,17 +82,19 @@ func ScanCORS(rawURL string) (*CORSResult, error) {
 		},
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	// リダイレクトを無制限に追跡していた以前の実装は、対象サイトが内部アドレスへ
+	// 302 を返すだけで SSRF 保護をすり抜けられた。共通クライアントに寄せて封じる。
+	client := safehttp.NewClient(scanTimeout, maxRedirects)
 	results := make([]CORSTestResult, 0, len(tests))
 	vulnerable := false
 
 	for _, tc := range tests {
-		req, err := http.NewRequest("GET", rawURL, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
 			continue
 		}
 		req.Header.Set("Origin", tc.origin)
-		req.Header.Set("User-Agent", "ShieldScan/1.0")
+		req.Header.Set("User-Agent", userAgent)
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -103,7 +108,7 @@ func ScanCORS(rawURL string) (*CORSResult, error) {
 			})
 			continue
 		}
-		resp.Body.Close()
+		drainAndClose(resp)
 
 		acao := resp.Header.Get("Access-Control-Allow-Origin")
 		acac := strings.ToLower(resp.Header.Get("Access-Control-Allow-Credentials")) == "true"

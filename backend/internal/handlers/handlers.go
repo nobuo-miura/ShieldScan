@@ -3,12 +3,15 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/nobuo-miura/shieldscan/internal/analyzer"
 	"github.com/nobuo-miura/shieldscan/internal/models"
+	"github.com/nobuo-miura/shieldscan/internal/safehttp"
 )
 
 // CORSMiddleware はすべてのAPIリクエストにCORSヘッダーを付与するミドルウェアです。
@@ -28,10 +31,15 @@ func CORSMiddleware(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // writeJSON はレスポンスボディをJSONエンコードして書き込むヘルパーです。
+//
+// エンコードに失敗してもヘッダーは送出済みでステータスを変更できないため、
+// ログに残すだけにとどめます（多くはクライアント切断が原因）。
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("failed to encode response: %v", err)
+	}
 }
 
 // writeError は {"error": msg} 形式のJSONエラーレスポンスを返すヘルパーです。
@@ -54,8 +62,13 @@ func parseURL(r *http.Request) (string, error) {
 		rawURL = "https://" + rawURL
 	}
 	parsed, err := url.ParseRequestURI(rawURL)
-	if err != nil || parsed.Host == "" {
+	if err != nil {
 		return "", err
+	}
+	// ホストなしのURLでも err は nil になりうるので個別に弾く。
+	// ここで err をそのまま返すと nil エラーで空URLが通ってしまう。
+	if parsed.Host == "" {
+		return "", errors.New("URL has no host")
 	}
 	return rawURL, nil
 }
@@ -78,11 +91,11 @@ func AnalyzeHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid URL")
 		return
 	}
-	if err := validateNoSSRF(rawURL); err != nil {
+	if err := safehttp.ValidateURL(r.Context(), rawURL); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	result, err := analyzer.Analyze(rawURL)
+	result, err := analyzer.Analyze(r.Context(), rawURL)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -123,11 +136,11 @@ func CORSHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid URL")
 		return
 	}
-	if err := validateNoSSRF(rawURL); err != nil {
+	if err := safehttp.ValidateURL(r.Context(), rawURL); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	result, err := analyzer.ScanCORS(rawURL)
+	result, err := analyzer.ScanCORS(r.Context(), rawURL)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -189,11 +202,11 @@ func SSLHandler(w http.ResponseWriter, r *http.Request) {
 	if idx := strings.Index(host, "/"); idx != -1 {
 		host = host[:idx]
 	}
-	if err := validateNoSSRF("https://" + host); err != nil {
+	if err := safehttp.ValidateHost(r.Context(), host); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	result, err := analyzer.CheckSSL(host, body.Port)
+	result, err := analyzer.CheckSSL(r.Context(), host, body.Port)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -219,11 +232,11 @@ func CookieHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid URL")
 		return
 	}
-	if err := validateNoSSRF(rawURL); err != nil {
+	if err := safehttp.ValidateURL(r.Context(), rawURL); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	result, err := analyzer.AuditCookies(rawURL)
+	result, err := analyzer.AuditCookies(r.Context(), rawURL)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return

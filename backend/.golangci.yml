@@ -1,0 +1,39 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose      # HTTPレスポンスボディの閉じ忘れ検出。スキャナ本体で多用するため重要
+    - errcheck
+    - errorlint      # %w によるラップ漏れ・型アサーションの取りこぼし
+    - gosec          # セキュリティツール自身のセキュリティ問題
+    - misspell
+    - noctx          # context なしの HTTP リクエスト検出
+    - revive
+    - unconvert
+    - usestdlibvars
+
+  settings:
+    revive:
+      rules:
+        # 本リポジトリは1ファイル1機能で、各ファイル冒頭に日本語の説明を置く方針。
+        # パッケージコメントは analyzer.go / handlers.go 側に集約しているため無効化する。
+        - name: package-comments
+          disabled: true
+        # ルール関数のシグネチャは rules テーブル全体で揃える必要があり、
+        # 個々の実装で引数を使わないケースが普通に出る。
+        - name: unused-parameter
+          disabled: true
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - bodyclose
+          - errcheck
+          - gosec
+          - noctx
+
+formatters:
+  enable:
+    - gofmt
