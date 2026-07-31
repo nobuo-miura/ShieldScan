@@ -53,11 +53,6 @@ export function JWToolTab() {
     finally { setLoading(false) }
   }
 
-  const worstSeverity = result?.findings?.reduce((w, f) => {
-    const order = { info: 0, warning: 1, high: 2, critical: 3 }
-    return order[f.severity] > order[w] ? f.severity : w
-  }, 'info')
-
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm" style={{ color: 'var(--text-muted)' }}>

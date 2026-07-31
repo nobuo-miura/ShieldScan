@@ -1,0 +1,70 @@
+name: Bug report / バグ報告
+description: Something is not working as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        セキュリティ脆弱性はここではなく [Security Advisories](https://github.com/nobuo-miura/ShieldScan/security/advisories/new) から報告をお願いします。
+        Do not report security vulnerabilities here — use Security Advisories instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened? / 何が起きましたか
+      description: 期待した動作と実際の動作を書いてください。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce / 再現手順
+      placeholder: |
+        1. Open the CORS tab
+        2. Enter https://example.com
+        3. Click スキャン
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part? / どの部分
+      options:
+        - Security Headers scan
+        - CORS scan
+        - JWT analyzer
+        - SSL/TLS check
+        - Cookie audit
+        - Scan history
+        - Build / Docker / setup
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Commit or version / コミット・バージョン
+      placeholder: e.g. dd492cf or v0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: how-run
+    attributes:
+      label: How are you running it? / 実行方法
+      options:
+        - Docker Compose
+        - Local (go run + npm run dev)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / ログ
+      description: バックエンドのログやブラウザのコンソールエラーがあれば貼ってください。
+      render: shell

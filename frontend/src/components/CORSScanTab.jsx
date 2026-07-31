@@ -1,11 +1,5 @@
 import { useState } from 'react'
 
-const severityConfig = {
-  critical: { color: 'var(--red)',    bg: 'var(--red-dim)',    label: 'CRITICAL' },
-  high:     { color: 'var(--yellow)', bg: 'var(--yellow-dim)', label: 'HIGH' },
-  info:     { color: 'var(--accent)', bg: 'var(--accent-dim)', label: 'INFO' },
-}
-
 function TestRow({ test }) {
   const [open, setOpen] = useState(false)
 

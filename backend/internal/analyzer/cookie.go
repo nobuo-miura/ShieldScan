@@ -4,10 +4,13 @@
 package analyzer
 
 import (
+	"context"
 	"net/http"
 	"net/http/cookiejar"
 	"strings"
 	"time"
+
+	"github.com/nobuo-miura/shieldscan/internal/safehttp"
 )
 
 // CookieResult は1つのCookieのセキュリティ監査結果を表します。
@@ -49,32 +52,27 @@ var sensitiveNamePatterns = []string{
 //   - SameSite属性（CSRF攻撃への脆弱性）
 //
 // 機密Cookieと判定されたものはより厳しい基準で評価されます。
-func AuditCookies(rawURL string) (*CookieAuditResult, error) {
+func AuditCookies(ctx context.Context, rawURL string) (*CookieAuditResult, error) {
 	start := time.Now()
 
-	jar, _ := cookiejar.New(nil)
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-		Jar:     jar,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return http.ErrUseLastResponse
-			}
-			return nil
-		},
-	}
-
-	req, err := http.NewRequest("GET", rawURL, nil)
+	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "ShieldScan/1.0")
+	client := safehttp.NewClient(scanTimeout, maxRedirects)
+	client.Jar = jar
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	resp.Body.Close()
+	drainAndClose(resp)
 	elapsed := time.Since(start).Milliseconds()
 
 	isHTTPS := strings.HasPrefix(rawURL, "https://")

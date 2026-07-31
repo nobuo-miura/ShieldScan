@@ -1,0 +1,10 @@
+# ホスト側の成果物をビルドコンテキストに持ち込まない。
+# node_modules はアーキテクチャ依存のバイナリを含むため特に危険。
+node_modules
+dist
+.env
+.env.local
+Dockerfile
+.dockerignore
+npm-debug.log*
+.DS_Store
