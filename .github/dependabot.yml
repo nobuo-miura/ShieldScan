@@ -34,3 +34,18 @@ updates:
       interval: weekly
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      # Dependabot は「新しいバージョンか」しか見ず、安定版か開発版かを区別しない。
+      # nginx と node はどちらもバージョン番号で系統が分かれるため、
+      # 安定版ライン内の patch 更新だけを受け取り、ライン自体の移行は手動で行う。
+      #
+      # nginx: 奇数マイナーが mainline、偶数が stable。1.30 は stable、1.31 は mainline。
+      - dependency-name: "nginx"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
+      # node: 偶数メジャーのみ LTS になる。24 は LTS (Krypton)、25 は Current で
+      # 約6ヶ月でEOL。次に上げるのは 26 が LTS になってから（2026-10 予定）。
+      - dependency-name: "node"
+        update-types:
+          - "version-update:semver-major"
