@@ -1,4 +1,4 @@
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27-alpine AS builder
 WORKDIR /app
 # 現時点で外部依存はゼロなので go.sum は存在しない。
 # 初めて依存を追加したら、この行に go.sum も足すこと。
