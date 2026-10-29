@@ -21,8 +21,25 @@ URLのHTTPレスポンスヘッダーを解析し、セキュリティスコア�
 
 その他:
 - レーダーチャートによるヘッダースコアの可視化
-- 各問題点に対する日本語の改善アドバイス
+- 各問題点に対する改善アドバイス
+- 日本語・英語の表示切り替え
 - スキャン履歴（直近50件、新しい順）
+
+## 表示言語
+
+日本語と英語に対応しています。初回表示時はブラウザの言語設定から判定し、日本語以外は英語になります。
+画面右上のトグル（EN / JA）で切り替えられ、選択内容は `localStorage` に保存されます。
+
+診断結果の文言はバックエンドが訳文ではなく翻訳キーと差し込みパラメータを返し、フロントエンドの辞書で解決します。
+このため言語を切り替えると、保存済みのスキャン履歴の表示も切り替わります。
+
+辞書は `frontend/src/i18n/locales/` にあります。メッセージを追加・変更するときは次の3点をそろえてください。
+
+- `backend/internal/msg/keys.go` のキー定数と `AllKeys`
+- `frontend/src/i18n/locales/ja.json`
+- `frontend/src/i18n/locales/en.json`
+
+`go test ./internal/msg/` がキーの過不足とプレースホルダの不一致を検出します。
 
 ## Tech Stack
 
@@ -122,11 +139,26 @@ ShieldScan はユーザーが指定した任意のURLへサーバー側からリ
       "score": 15,
       "max_score": 20,
       "status": "warning",
-      "description": "...",
-      "advice": "..."
+      "description": { "key": "analyzer.header.hsts.desc" },
+      "advice": { "key": "analyzer.header.hsts.advice.no_preload" }
     }
   ]
 }
+```
+
+`description` や `advice` などの説明文は、訳文ではなく翻訳キー（と必要に応じて `params`）で返します。
+
+```json
+{ "key": "analyzer.ssl.finding.cert_valid.title", "params": { "count": 57 } }
+```
+
+対応する訳文は `frontend/src/i18n/locales/` にあります。改善点がない場合、`advice` は省略されます。
+
+エラー応答も同じ形式です。
+
+```json
+// 400 Bad Request
+{ "error": { "key": "api.error.blocked_address", "params": { "ip": "169.254.169.254" } } }
 ```
 
 ### POST /api/cors — CORS診断
@@ -182,11 +214,13 @@ shieldscan/
 │       │   ├── ssl.go      # SSL/TLS診断
 │       │   └── cookie.go   # Cookie監査
 │       ├── handlers/       # HTTPハンドラー・レート制限
+│       ├── msg/            # 診断メッセージの翻訳キー定義
 │       ├── safehttp/       # SSRF耐性のあるHTTPクライアント・ダイヤラー
 │       └── models/         # インメモリ履歴ストア
 ├── frontend/
 │   └── src/
-│       └── components/     # 各診断タブのUIコンポーネント
+│       ├── components/     # 各診断タブのUIコンポーネント
+│       └── i18n/           # 翻訳関数と辞書（locales/ja.json・en.json）
 └── docker-compose.yml
 ```
 

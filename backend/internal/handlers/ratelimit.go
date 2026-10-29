@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/nobuo-miura/shieldscan/internal/msg"
 )
 
 const (
@@ -78,7 +80,7 @@ func RateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		if count >= rateLimitRequests {
 			record.mu.Unlock()
 			w.Header().Set("Retry-After", strconv.Itoa(int(rateLimitWindow.Seconds())))
-			writeError(w, http.StatusTooManyRequests, "rate limit exceeded, please try again later")
+			writeError(w, http.StatusTooManyRequests, msg.M(msg.APIRateLimited))
 			return
 		}
 

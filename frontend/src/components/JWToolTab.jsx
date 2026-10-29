@@ -1,5 +1,8 @@
 import { useState } from 'react'
 
+import { useI18n } from '../i18n/i18n'
+import { errorMessage, postJSON } from '../api'
+
 const severityColor = {
   critical: 'var(--red)',
   high:     'var(--yellow)',
@@ -31,32 +34,27 @@ function JsonTree({ data }) {
 }
 
 export function JWToolTab() {
+  const { t, tm } = useI18n()
   const [token, setToken] = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
 
-  const analyze = async (t) => {
-    const tk = (t ?? token).trim()
+  const analyze = async (candidate) => {
+    const tk = (candidate ?? token).trim()
     if (!tk) return
     setLoading(true); setError(''); setResult(null)
     try {
-      const res = await fetch('/api/jwt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: tk }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error ?? 'Unknown error')
+      const data = await postJSON('/api/jwt', { token: tk })
       setResult(data)
-    } catch (e) { setError(e.message) }
+    } catch (e) { setError(errorMessage(e)) }
     finally { setLoading(false) }
   }
 
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-        JWTトークンを解析し、alg:none・kid injection・exp未設定などの脆弱性を検出します。
+        {t('ui.jwt.intro')}
       </p>
 
       <div className="flex flex-col gap-2">
@@ -69,23 +67,23 @@ export function JWToolTab() {
           <button onClick={() => { setToken(SAMPLE_JWT); analyze(SAMPLE_JWT) }}
             className="px-4 py-2 rounded-lg text-xs font-mono border transition-all"
             style={{ borderColor: 'var(--border)', color: 'var(--text-muted)', background: 'transparent' }}>
-            サンプル (alg:none)
+            {t('ui.jwt.sample')}
           </button>
           <button onClick={() => analyze()} disabled={loading || !token.trim()}
             className="flex-1 py-2 rounded-lg font-sans font-bold text-sm disabled:opacity-40"
             style={{ background: 'var(--accent)', color: '#000' }}>
-            {loading ? '解析中...' : '解析'}
+            {loading ? t('ui.action.analyzing') : t('ui.action.analyze')}
           </button>
         </div>
       </div>
 
-      {error && <div className="p-3 rounded-lg font-mono text-sm" style={{ background: 'var(--red-dim)', color: 'var(--red)' }}>✗ {error}</div>}
+      {error && <div className="p-3 rounded-lg font-mono text-sm" style={{ background: 'var(--red-dim)', color: 'var(--red)' }}>✗ {tm(error)}</div>}
 
       {result && (
         <div className="flex flex-col gap-4">
           {result.parse_error ? (
             <div className="p-4 rounded-xl border" style={{ background: 'var(--red-dim)', borderColor: 'var(--red)44', color: 'var(--red)' }}>
-              パースエラー: {result.parse_error}
+              {t('ui.jwt.parse_error')}: {tm(result.parse_error)}
             </div>
           ) : (
             <>
@@ -93,15 +91,15 @@ export function JWToolTab() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                 {result.issued_at && (
                   <div className="p-3 rounded-lg border" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
-                    <div className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>発行日時</div>
+                    <div className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>{t('ui.jwt.issued_at')}</div>
                     <div className="font-mono text-xs mt-1 break-all" style={{ color: 'var(--text)' }}>{result.issued_at}</div>
                   </div>
                 )}
                 {result.expires_at && (
                   <div className="p-3 rounded-lg border" style={{ background: 'var(--bg-card)', borderColor: result.expired ? 'var(--red)44' : 'var(--border)' }}>
-                    <div className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>有効期限</div>
+                    <div className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>{t('ui.jwt.expires_at')}</div>
                     <div className="font-mono text-xs mt-1 break-all" style={{ color: result.expired ? 'var(--red)' : 'var(--green)' }}>
-                      {result.expires_at} {result.expired ? '⚠ 期限切れ' : ''}
+                      {result.expires_at} {result.expired ? t('ui.jwt.expired') : ''}
                     </div>
                   </div>
                 )}
@@ -110,18 +108,18 @@ export function JWToolTab() {
               {/* Header / Payload */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
-                  <div className="font-mono text-xs mb-2" style={{ color: 'var(--text-muted)' }}>── ヘッダー</div>
+                  <div className="font-mono text-xs mb-2" style={{ color: 'var(--text-muted)' }}>{t('ui.jwt.header')}</div>
                   <JsonTree data={result.header} />
                 </div>
                 <div>
-                  <div className="font-mono text-xs mb-2" style={{ color: 'var(--text-muted)' }}>── ペイロード</div>
+                  <div className="font-mono text-xs mb-2" style={{ color: 'var(--text-muted)' }}>{t('ui.jwt.payload')}</div>
                   <JsonTree data={result.payload} />
                 </div>
               </div>
 
               {/* Findings */}
               <div>
-                <div className="font-mono text-xs mb-2" style={{ color: 'var(--text-muted)' }}>── 検出結果</div>
+                <div className="font-mono text-xs mb-2" style={{ color: 'var(--text-muted)' }}>{t('ui.findings.heading')}</div>
                 <div className="flex flex-col gap-2">
                   {result.findings.map((f, i) => (
                     <div key={i} className="p-3 rounded-lg border" style={{ background: severityBg[f.severity], borderColor: severityColor[f.severity] + '44' }}>
@@ -129,9 +127,9 @@ export function JWToolTab() {
                         <span className="font-mono text-xs font-bold px-2 py-0.5 rounded" style={{ background: severityColor[f.severity] + '22', color: severityColor[f.severity] }}>
                           {f.severity.toUpperCase()}
                         </span>
-                        <span className="font-sans font-bold text-sm" style={{ color: 'var(--text)' }}>{f.title}</span>
+                        <span className="font-sans font-bold text-sm" style={{ color: 'var(--text)' }}>{tm(f.title)}</span>
                       </div>
-                      <p className="text-xs" style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>{f.description}</p>
+                      <p className="text-xs" style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>{tm(f.description)}</p>
                     </div>
                   ))}
                 </div>

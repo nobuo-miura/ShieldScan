@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nobuo-miura/shieldscan/internal/msg"
 	"github.com/nobuo-miura/shieldscan/internal/safehttp"
 )
 
@@ -18,13 +19,13 @@ import (
 // Sensitive は Cookie名が [sensitiveNamePatterns] のいずれかを含む場合に true になります。
 // Severity はそのCookieで検出された問題の中で最も深刻なレベルを示します。
 type CookieResult struct {
-	Name      string   `json:"name"`
-	Sensitive bool     `json:"sensitive"` // セッション・トークン等の機密Cookieと判定されたか
-	Secure    bool     `json:"secure"`
-	HttpOnly  bool     `json:"http_only"`
-	SameSite  string   `json:"same_site"` // "Strict", "Lax", "None", "未設定"
-	Issues    []string `json:"issues"`
-	Severity  string   `json:"severity"` // Issues中の最高深刻度: "info", "warning", "high", "critical"
+	Name      string        `json:"name"`
+	Sensitive bool          `json:"sensitive"` // セッション・トークン等の機密Cookieと判定されたか
+	Secure    bool          `json:"secure"`
+	HttpOnly  bool          `json:"http_only"`
+	SameSite  string        `json:"same_site"` // "Strict", "Lax", "None"、属性なしの場合は空文字列
+	Issues    []msg.Message `json:"issues"`
+	Severity  string        `json:"severity"` // Issues中の最高深刻度: "info", "warning", "high", "critical"
 }
 
 // CookieAuditResult はCookieセキュリティ監査の総合結果を表します。
@@ -81,23 +82,22 @@ func AuditCookies(ctx context.Context, rawURL string) (*CookieAuditResult, error
 
 	for _, c := range resp.Cookies() {
 		sensitive := isSensitiveCookie(c.Name)
-		issues := []string{}
+		issues := []msg.Message{}
 		worstSeverity := "info"
 
 		// Secure flag
 		if !c.Secure && isHTTPS {
-			issues = append(issues, "Secureフラグなし — HTTP経由で送信される可能性があります")
+			issues = append(issues, msg.M(msg.CookieIssueNoSecure))
 			worstSeverity = upgradeSeverity(worstSeverity, "high")
 		}
 
 		// HttpOnly
 		if !c.HttpOnly {
-			msg := "HttpOnlyフラグなし — JavaScriptからdocument.cookieでアクセス可能です"
 			if sensitive {
-				issues = append(issues, msg+" (機密Cookie)")
+				issues = append(issues, msg.M(msg.CookieIssueNoHTTPOnlySensitive))
 				worstSeverity = upgradeSeverity(worstSeverity, "high")
 			} else {
-				issues = append(issues, msg)
+				issues = append(issues, msg.M(msg.CookieIssueNoHTTPOnly))
 				worstSeverity = upgradeSeverity(worstSeverity, "warning")
 			}
 		}
@@ -112,19 +112,20 @@ func AuditCookies(ctx context.Context, rawURL string) (*CookieAuditResult, error
 		case http.SameSiteNoneMode:
 			sameSite = "None"
 			if sensitive {
-				issues = append(issues, "SameSite=Strict/Laxなし — CSRF攻撃に脆弱な可能性があります (機密Cookie)")
+				issues = append(issues, msg.M(msg.CookieIssueSameSiteNoneSensitive))
 				worstSeverity = upgradeSeverity(worstSeverity, "high")
 			} else {
-				issues = append(issues, "SameSite=None — クロスサイトリクエストで送信されます")
+				issues = append(issues, msg.M(msg.CookieIssueSameSiteNone))
 				worstSeverity = upgradeSeverity(worstSeverity, "warning")
 			}
 		default:
-			sameSite = "未設定"
+			// 属性が付いていない場合は値を持たせず、表示文言はクライアント側に委ねる。
+			sameSite = ""
 			if sensitive {
-				issues = append(issues, "SameSite属性が未設定 — CSRF攻撃に脆弱な可能性があります (機密Cookie)")
+				issues = append(issues, msg.M(msg.CookieIssueSameSiteUnsetSensitive))
 				worstSeverity = upgradeSeverity(worstSeverity, "high")
 			} else {
-				issues = append(issues, "SameSite属性が未設定 — クロスサイトリクエストで送信されます")
+				issues = append(issues, msg.M(msg.CookieIssueSameSiteUnset))
 				worstSeverity = upgradeSeverity(worstSeverity, "warning")
 			}
 		}

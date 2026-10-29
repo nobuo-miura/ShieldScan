@@ -1,5 +1,8 @@
 // Package analyzer はWebサイトのセキュリティヘッダー・CORS・JWT・SSL/TLS・Cookieを
 // 診断するための各種スキャン機能を提供します。
+//
+// 診断結果に含まれる説明文やアドバイスは [msg.Message]（翻訳キーと差し込みパラメータ）
+// として返され、実際の文言はクライアント側の辞書で解決されます。
 package analyzer
 
 import (
@@ -10,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nobuo-miura/shieldscan/internal/msg"
 	"github.com/nobuo-miura/shieldscan/internal/safehttp"
 )
 
@@ -39,14 +43,14 @@ const (
 //   - "warning" — 設定はあるが改善の余地がある
 //   - "missing" — ヘッダーが存在しない
 type HeaderResult struct {
-	Name        string `json:"name"`
-	Present     bool   `json:"present"`
-	Value       string `json:"value"`
-	Score       int    `json:"score"`     // 実際の得点（0〜MaxScore）
-	MaxScore    int    `json:"max_score"` // このヘッダーの満点
-	Status      string `json:"status"`    // "good", "warning", "missing"
-	Description string `json:"description"`
-	Advice      string `json:"advice"`
+	Name        string       `json:"name"`
+	Present     bool         `json:"present"`
+	Value       string       `json:"value"`
+	Score       int          `json:"score"`     // 実際の得点（0〜MaxScore）
+	MaxScore    int          `json:"max_score"` // このヘッダーの満点
+	Status      string       `json:"status"`    // "good", "warning", "missing"
+	Description msg.Message  `json:"description"`
+	Advice      *msg.Message `json:"advice,omitempty"` // 改善点がない場合は nil
 }
 
 // AnalysisResult はURL全体のセキュリティヘッダースキャン結果を表します。
@@ -66,144 +70,146 @@ type AnalysisResult struct {
 
 // headerRule は1つのセキュリティヘッダーの評価ルールを定義します。
 // check 関数にヘッダーの値と存在有無を渡すと、得点・ステータス・改善アドバイスを返します。
+// descKey と check が返すメッセージはいずれも翻訳キーであり、訳文は含みません。
+// 改善点がない場合、check は空のメッセージ（[msg.Message.IsZero] が true）を返します。
 type headerRule struct {
-	name        string
-	maxScore    int
-	description string
-	check       func(value string, present bool) (score int, status string, advice string)
+	name     string
+	maxScore int
+	descKey  string
+	check    func(value string, present bool) (score int, status string, advice msg.Message)
 }
 
 var rules = []headerRule{
 	{
-		name:        "Strict-Transport-Security",
-		maxScore:    20,
-		description: "HTTPSの強制を指示します。中間者攻撃（MITM）を防ぐために重要なヘッダーです。",
-		check: func(value string, present bool) (int, string, string) {
+		name:     "Strict-Transport-Security",
+		maxScore: 20,
+		descKey:  msg.HeaderHSTSDesc,
+		check: func(value string, present bool) (int, string, msg.Message) {
 			if !present {
-				return 0, "missing", "HSTSヘッダーを追加し、max-ageを最低31536000（1年）以上に設定してください。"
+				return 0, "missing", msg.M(msg.HeaderHSTSAdviceMissing)
 			}
 			lower := strings.ToLower(value)
 			if strings.Contains(lower, "max-age=0") {
-				return 5, "warning", "max-age=0はHSTSを無効化します。適切な値（例: max-age=31536000）を設定してください。"
+				return 5, "warning", msg.M(msg.HeaderHSTSAdviceMaxAgeZero)
 			}
 			if strings.Contains(lower, "includesubdomains") && strings.Contains(lower, "preload") {
-				return 20, "good", ""
+				return 20, "good", msg.Message{}
 			}
 			if strings.Contains(lower, "includesubdomains") {
-				return 15, "warning", "preloadディレクティブを追加するとより安全です。"
+				return 15, "warning", msg.M(msg.HeaderHSTSAdviceNoPreload)
 			}
-			return 10, "warning", "includeSubDomainsとpreloadディレクティブの追加を検討してください。"
+			return 10, "warning", msg.M(msg.HeaderHSTSAdviceNoSubdomains)
 		},
 	},
 	{
-		name:        "Content-Security-Policy",
-		maxScore:    25,
-		description: "XSS（クロスサイトスクリプティング）やデータインジェクション攻撃を防ぐための強力なヘッダーです。",
-		check: func(value string, present bool) (int, string, string) {
+		name:     "Content-Security-Policy",
+		maxScore: 25,
+		descKey:  msg.HeaderCSPDesc,
+		check: func(value string, present bool) (int, string, msg.Message) {
 			if !present {
-				return 0, "missing", "CSPヘッダーを設定してください。最初はContent-Security-Policy: default-src 'self'から始めるのがおすすめです。"
+				return 0, "missing", msg.M(msg.HeaderCSPAdviceMissing)
 			}
 			lower := strings.ToLower(value)
 			if strings.Contains(lower, "unsafe-inline") && strings.Contains(lower, "unsafe-eval") {
-				return 5, "warning", "unsafe-inlineとunsafe-evalは危険です。nonceやhashベースのCSPへの移行を検討してください。"
+				return 5, "warning", msg.M(msg.HeaderCSPAdviceUnsafeInlineEval)
 			}
 			if strings.Contains(lower, "unsafe-inline") || strings.Contains(lower, "unsafe-eval") {
-				return 12, "warning", "unsafe-inlineまたはunsafe-evalが含まれています。より厳格なポリシーを検討してください。"
+				return 12, "warning", msg.M(msg.HeaderCSPAdviceUnsafeEither)
 			}
 			if strings.Contains(lower, "default-src") {
-				return 25, "good", ""
+				return 25, "good", msg.Message{}
 			}
-			return 15, "warning", "default-srcディレクティブの追加を検討してください。"
+			return 15, "warning", msg.M(msg.HeaderCSPAdviceNoDefaultSrc)
 		},
 	},
 	{
-		name:        "X-Frame-Options",
-		maxScore:    10,
-		description: "クリックジャッキング攻撃を防ぎます。iframeへの埋め込みを制御します。",
-		check: func(value string, present bool) (int, string, string) {
+		name:     "X-Frame-Options",
+		maxScore: 10,
+		descKey:  msg.HeaderXFrameOptionsDesc,
+		check: func(value string, present bool) (int, string, msg.Message) {
 			if !present {
-				return 0, "missing", "X-Frame-Options: DENYまたはSAMEORIGINを設定してください。"
+				return 0, "missing", msg.M(msg.HeaderXFrameOptionsAdviceMissing)
 			}
 			upper := strings.ToUpper(value)
 			if upper == "DENY" || upper == "SAMEORIGIN" {
-				return 10, "good", ""
+				return 10, "good", msg.Message{}
 			}
-			return 5, "warning", "DENY（最も安全）またはSAMEORIGINの使用を推奨します。"
+			return 5, "warning", msg.M(msg.HeaderXFrameOptionsAdviceWeakValue)
 		},
 	},
 	{
-		name:        "X-Content-Type-Options",
-		maxScore:    10,
-		description: "ブラウザがMIMEタイプをスニッフィングするのを防ぎます。",
-		check: func(value string, present bool) (int, string, string) {
+		name:     "X-Content-Type-Options",
+		maxScore: 10,
+		descKey:  msg.HeaderXContentTypeDesc,
+		check: func(value string, present bool) (int, string, msg.Message) {
 			if !present {
-				return 0, "missing", "X-Content-Type-Options: nosniffを設定してください。"
+				return 0, "missing", msg.M(msg.HeaderXContentTypeAdviceMissing)
 			}
 			if strings.ToLower(value) == "nosniff" {
-				return 10, "good", ""
+				return 10, "good", msg.Message{}
 			}
-			return 5, "warning", "値はnosniffである必要があります。"
+			return 5, "warning", msg.M(msg.HeaderXContentTypeAdviceNotNosniff)
 		},
 	},
 	{
-		name:        "Referrer-Policy",
-		maxScore:    10,
-		description: "リファラー情報の送信範囲を制御し、プライバシーを保護します。",
-		check: func(value string, present bool) (int, string, string) {
+		name:     "Referrer-Policy",
+		maxScore: 10,
+		descKey:  msg.HeaderReferrerPolicyDesc,
+		check: func(value string, present bool) (int, string, msg.Message) {
 			if !present {
-				return 0, "missing", "Referrer-Policy: strict-origin-when-cross-originの設定を推奨します。"
+				return 0, "missing", msg.M(msg.HeaderReferrerPolicyAdviceMissing)
 			}
 			safe := []string{"no-referrer", "strict-origin", "strict-origin-when-cross-origin", "same-origin"}
 			lower := strings.ToLower(strings.TrimSpace(value))
 			for _, s := range safe {
 				if lower == s {
-					return 10, "good", ""
+					return 10, "good", msg.Message{}
 				}
 			}
-			return 5, "warning", "strict-origin-when-cross-originなどのより厳格なポリシーを推奨します。"
+			return 5, "warning", msg.M(msg.HeaderReferrerPolicyAdviceWeakValue)
 		},
 	},
 	{
-		name:        "Permissions-Policy",
-		maxScore:    10,
-		description: "カメラ・マイク・位置情報などのブラウザAPIへのアクセスを制御します。",
-		check: func(value string, present bool) (int, string, string) {
+		name:     "Permissions-Policy",
+		maxScore: 10,
+		descKey:  msg.HeaderPermissionsPolicyDesc,
+		check: func(_ string, present bool) (int, string, msg.Message) {
 			if !present {
-				return 0, "missing", "Permissions-Policyを設定し、不要なブラウザ機能へのアクセスを制限してください。"
+				return 0, "missing", msg.M(msg.HeaderPermissionsPolicyAdviceMissing)
 			}
-			return 10, "good", ""
+			return 10, "good", msg.Message{}
 		},
 	},
 	{
-		name:        "X-XSS-Protection",
-		maxScore:    5,
-		description: "古いブラウザ向けのXSSフィルター設定です。現代のブラウザではCSPで代替されます。",
-		check: func(value string, present bool) (int, string, string) {
+		name:     "X-XSS-Protection",
+		maxScore: 5,
+		descKey:  msg.HeaderXXSSProtectionDesc,
+		check: func(value string, present bool) (int, string, msg.Message) {
 			if !present {
-				return 0, "missing", "X-XSS-Protection: 1; mode=blockを設定してください（レガシー対応）。"
+				return 0, "missing", msg.M(msg.HeaderXXSSProtectionAdviceMissing)
 			}
 			if strings.Contains(value, "1") {
-				return 5, "good", ""
+				return 5, "good", msg.Message{}
 			}
-			return 2, "warning", "1; mode=blockの設定を推奨します。"
+			return 2, "warning", msg.M(msg.HeaderXXSSProtectionAdviceWeakValue)
 		},
 	},
 	{
-		name:        "Cache-Control",
-		maxScore:    10,
-		description: "機密ページのキャッシュを制御し、センシティブな情報の漏洩を防ぎます。",
-		check: func(value string, present bool) (int, string, string) {
+		name:     "Cache-Control",
+		maxScore: 10,
+		descKey:  msg.HeaderCacheControlDesc,
+		check: func(value string, present bool) (int, string, msg.Message) {
 			if !present {
-				return 0, "missing", "機密ページにはCache-Control: no-store, no-cacheを設定してください。"
+				return 0, "missing", msg.M(msg.HeaderCacheControlAdviceMissing)
 			}
 			lower := strings.ToLower(value)
 			if strings.Contains(lower, "no-store") {
-				return 10, "good", ""
+				return 10, "good", msg.Message{}
 			}
 			if strings.Contains(lower, "no-cache") || strings.Contains(lower, "private") {
-				return 7, "warning", "no-storeの追加をお勧めします。"
+				return 7, "warning", msg.M(msg.HeaderCacheControlAdviceAddNoStore)
 			}
-			return 3, "warning", "機密ページにはno-store, no-cacheの設定を推奨します。"
+			return 3, "warning", msg.M(msg.HeaderCacheControlAdviceWeakValue)
 		},
 	},
 }
@@ -245,16 +251,19 @@ func Analyze(ctx context.Context, rawURL string) (*AnalysisResult, error) {
 		present := value != ""
 		score, status, advice := rule.check(value, present)
 
-		results = append(results, HeaderResult{
+		result := HeaderResult{
 			Name:        rule.name,
 			Present:     present,
 			Value:       value,
 			Score:       score,
 			MaxScore:    rule.maxScore,
 			Status:      status,
-			Description: rule.description,
-			Advice:      advice,
-		})
+			Description: msg.M(rule.descKey),
+		}
+		if !advice.IsZero() {
+			result.Advice = &advice
+		}
+		results = append(results, result)
 
 		totalScore += score
 		maxScore += rule.maxScore

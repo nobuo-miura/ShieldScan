@@ -1,12 +1,15 @@
 import { useState } from 'react'
 
+import { useI18n } from '../i18n/i18n'
+
 const statusConfig = {
-  good:    { color: 'var(--green)',  bg: 'var(--green-dim)',  icon: '✓', label: '良好' },
-  warning: { color: 'var(--yellow)', bg: 'var(--yellow-dim)', icon: '⚠', label: '要改善' },
-  missing: { color: 'var(--red)',    bg: 'var(--red-dim)',    icon: '✗', label: '未設定' },
+  good:    { color: 'var(--green)',  bg: 'var(--green-dim)',  icon: '✓', labelKey: 'ui.status.good' },
+  warning: { color: 'var(--yellow)', bg: 'var(--yellow-dim)', icon: '⚠', labelKey: 'ui.status.warning' },
+  missing: { color: 'var(--red)',    bg: 'var(--red-dim)',    icon: '✗', labelKey: 'ui.status.missing' },
 }
 
 export function HeaderCard({ header, index }) {
+  const { t, tm } = useI18n()
   const [open, setOpen] = useState(false)
   const cfg = statusConfig[header.status] ?? statusConfig.missing
   const pct = header.max_score > 0 ? (header.score / header.max_score) * 100 : 0
@@ -41,7 +44,7 @@ export function HeaderCard({ header, index }) {
               className="text-xs px-2 py-0.5 rounded-full font-mono"
               style={{ background: cfg.bg, color: cfg.color }}
             >
-              {cfg.label}
+              {t(cfg.labelKey)}
             </span>
           </div>
           {/* Score bar */}
@@ -78,7 +81,7 @@ export function HeaderCard({ header, index }) {
         >
           {header.value && (
             <div className="mt-3 mb-3">
-              <div className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>現在の値</div>
+              <div className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>{t('ui.headers.current_value')}</div>
               <code
                 className="block text-xs p-2 rounded break-all"
                 style={{ background: 'var(--bg)', color: 'var(--accent)', fontFamily: '"Space Mono", monospace' }}
@@ -88,14 +91,14 @@ export function HeaderCard({ header, index }) {
             </div>
           )}
           <p className="text-sm mb-2" style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>
-            {header.description}
+            {tm(header.description)}
           </p>
           {header.advice && (
             <div
               className="mt-2 p-3 rounded-lg text-sm"
               style={{ background: cfg.bg, color: cfg.color, lineHeight: 1.6 }}
             >
-              💡 {header.advice}
+              💡 {tm(header.advice)}
             </div>
           )}
         </div>

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nobuo-miura/shieldscan/internal/msg"
 	"github.com/nobuo-miura/shieldscan/internal/safehttp"
 )
 
@@ -20,9 +21,9 @@ const legacyProbeTimeout = 5 * time.Second
 
 // SSLFinding はTLS/SSL診断で検出された1件の問題を表します。
 type SSLFinding struct {
-	Severity    string `json:"severity"` // "critical", "high", "warning", "info"
-	Title       string `json:"title"`
-	Description string `json:"description"`
+	Severity    string      `json:"severity"` // "critical", "high", "warning", "info"
+	Title       msg.Message `json:"title"`
+	Description msg.Message `json:"description"`
 }
 
 // CertInfo はTLS証明書の主要情報をまとめた構造体です。
@@ -41,7 +42,7 @@ type CertInfo struct {
 
 // SSLResult はTLS/SSL診断の総合結果を表します。
 //
-// ConnectError が空でない場合はTLS接続自体に失敗しており、
+// ConnectError が nil でない場合はTLS接続自体に失敗しており、
 // TLSVersion・CipherSuite・Cert は空/nil になります。
 type SSLResult struct {
 	Host         string       `json:"host"`
@@ -52,7 +53,7 @@ type SSLResult struct {
 	Cert         *CertInfo    `json:"cert,omitempty"`
 	Findings     []SSLFinding `json:"findings"`
 	ResponseTime int64        `json:"response_time_ms"`
-	ConnectError string       `json:"connect_error,omitempty"` // TLS接続失敗時のエラーメッセージ
+	ConnectError *msg.Message `json:"connect_error,omitempty"` // TLS接続失敗時のメッセージ
 }
 
 // CheckSSL は指定ホストにTLS接続を確立し、セキュリティ診断を行います。
@@ -89,11 +90,13 @@ func CheckSSL(ctx context.Context, host, port string) (*SSLResult, error) {
 
 	rawConn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
 	if err != nil {
+		// Go のエラー文字列は翻訳対象外とし、パラメータとしてそのまま埋め込む。
+		connectError := msg.P(msg.SSLConnectError, "error", err.Error())
 		return &SSLResult{
 			Host:         host,
 			Port:         port,
 			ScannedAt:    time.Now(),
-			ConnectError: err.Error(),
+			ConnectError: &connectError,
 			ResponseTime: time.Since(start).Milliseconds(),
 		}, nil
 	}
@@ -109,20 +112,20 @@ func CheckSSL(ctx context.Context, host, port string) (*SSLResult, error) {
 	case tls.VersionTLS10, tls.VersionTLS11:
 		findings = append(findings, SSLFinding{
 			Severity:    "high",
-			Title:       fmt.Sprintf("古いTLSバージョン使用中: %s", tlsVersion),
-			Description: "TLS 1.0/1.1は2020年にRFC 8996で廃止されました。TLS 1.2以上に移行してください。",
+			Title:       msg.P(msg.SSLLegacyTLSTitle, "version", tlsVersion),
+			Description: msg.M(msg.SSLLegacyTLSDesc),
 		})
 	case tls.VersionTLS12:
 		findings = append(findings, SSLFinding{
 			Severity:    "info",
-			Title:       "TLS 1.2 使用中",
-			Description: "TLS 1.2は現在も安全ですが、TLS 1.3への移行でさらにセキュリティとパフォーマンスが向上します。",
+			Title:       msg.M(msg.SSLTLS12Title),
+			Description: msg.M(msg.SSLTLS12Desc),
 		})
 	case tls.VersionTLS13:
 		findings = append(findings, SSLFinding{
 			Severity:    "info",
-			Title:       "TLS 1.3 ✓ 最新バージョン使用中",
-			Description: "TLS 1.3は最新かつ最も安全なTLSバージョンです。",
+			Title:       msg.M(msg.SSLTLS13Title),
+			Description: msg.M(msg.SSLTLS13Desc),
 		})
 	}
 
@@ -131,8 +134,8 @@ func CheckSSL(ctx context.Context, host, port string) (*SSLResult, error) {
 	if isWeakCipher(cipherName) {
 		findings = append(findings, SSLFinding{
 			Severity:    "high",
-			Title:       fmt.Sprintf("脆弱な暗号スイート: %s", cipherName),
-			Description: "RC4・DES・3DES・EXPORTなどの弱い暗号スイートは無効化してください。",
+			Title:       msg.P(msg.SSLWeakCipherTitle, "cipher", cipherName),
+			Description: msg.M(msg.SSLWeakCipherDesc),
 		})
 	}
 
@@ -161,8 +164,8 @@ func CheckSSL(ctx context.Context, host, port string) (*SSLResult, error) {
 		if selfSigned {
 			findings = append(findings, SSLFinding{
 				Severity:    "high",
-				Title:       "自己署名証明書",
-				Description: "信頼された認証局（CA）が発行した証明書ではありません。本番環境では使用しないでください。",
+				Title:       msg.M(msg.SSLSelfSignedTitle),
+				Description: msg.M(msg.SSLSelfSignedDesc),
 			})
 		}
 
@@ -170,32 +173,32 @@ func CheckSSL(ctx context.Context, host, port string) (*SSLResult, error) {
 		case daysLeft < 0:
 			findings = append(findings, SSLFinding{
 				Severity:    "critical",
-				Title:       "証明書が期限切れ",
-				Description: fmt.Sprintf("証明書は%d日前に期限切れになりました。ブラウザは接続をブロックします。", -daysLeft),
+				Title:       msg.M(msg.SSLCertExpiredTitle),
+				Description: msg.P(msg.SSLCertExpiredDesc, "count", -daysLeft),
 			})
 		case daysLeft < 14:
 			findings = append(findings, SSLFinding{
 				Severity:    "critical",
-				Title:       fmt.Sprintf("証明書の期限まで %d日", daysLeft),
-				Description: "証明書の更新が急務です。Let's Encryptなどで今すぐ更新してください。",
+				Title:       msg.P(msg.SSLCertExpiringCriticalTitle, "count", daysLeft),
+				Description: msg.M(msg.SSLCertExpiringCriticalDesc),
 			})
 		case daysLeft < 30:
 			findings = append(findings, SSLFinding{
 				Severity:    "high",
-				Title:       fmt.Sprintf("証明書の期限まで %d日", daysLeft),
-				Description: "30日以内に期限切れになります。早めに更新を行ってください。",
+				Title:       msg.P(msg.SSLCertExpiringHighTitle, "count", daysLeft),
+				Description: msg.M(msg.SSLCertExpiringHighDesc),
 			})
 		case daysLeft < 60:
 			findings = append(findings, SSLFinding{
 				Severity:    "warning",
-				Title:       fmt.Sprintf("証明書の期限まで %d日", daysLeft),
-				Description: "60日以内に期限切れになります。更新の準備を始めてください。",
+				Title:       msg.P(msg.SSLCertExpiringWarningTitle, "count", daysLeft),
+				Description: msg.M(msg.SSLCertExpiringWarningDesc),
 			})
 		default:
 			findings = append(findings, SSLFinding{
 				Severity:    "info",
-				Title:       fmt.Sprintf("証明書有効期間: あと %d日", daysLeft),
-				Description: fmt.Sprintf("証明書の有効期限: %s", cert.NotAfter.Format("2006-01-02")),
+				Title:       msg.P(msg.SSLCertValidTitle, "count", daysLeft),
+				Description: msg.P(msg.SSLCertValidDesc, "date", cert.NotAfter.Format("2006-01-02")),
 			})
 		}
 
@@ -203,8 +206,8 @@ func CheckSSL(ctx context.Context, host, port string) (*SSLResult, error) {
 		if err := cert.VerifyHostname(host); err != nil {
 			findings = append(findings, SSLFinding{
 				Severity:    "critical",
-				Title:       "ホスト名不一致",
-				Description: fmt.Sprintf("証明書のCN/SANがホスト名 %q と一致しません。フィッシングや設定ミスの可能性があります。", host),
+				Title:       msg.M(msg.SSLHostnameMismatchTitle),
+				Description: msg.P(msg.SSLHostnameMismatchDesc, "host", host),
 			})
 		}
 
@@ -265,14 +268,14 @@ func checkWeakKey(cert *x509.Certificate, findings *[]SSLFinding) {
 		// We'll flag a general info
 		*findings = append(*findings, SSLFinding{
 			Severity:    "info",
-			Title:       "RSA公開鍵",
-			Description: "RSA鍵は2048bit以上を推奨します。ECDSAへの移行でパフォーマンスも向上します。",
+			Title:       msg.M(msg.SSLRSAKeyTitle),
+			Description: msg.M(msg.SSLRSAKeyDesc),
 		})
 	case x509.ECDSA:
 		*findings = append(*findings, SSLFinding{
 			Severity:    "info",
-			Title:       "ECDSA公開鍵 ✓",
-			Description: "ECDSAは効率的で安全な公開鍵アルゴリズムです。",
+			Title:       msg.M(msg.SSLECDSAKeyTitle),
+			Description: msg.M(msg.SSLECDSAKeyDesc),
 		})
 	}
 }
@@ -308,8 +311,8 @@ func checkLegacyTLS(ctx context.Context, host, port string, findings *[]SSLFindi
 			_ = conn.Close()
 			*findings = append(*findings, SSLFinding{
 				Severity:    "high",
-				Title:       fmt.Sprintf("%s を受け入れています", l.name),
-				Description: fmt.Sprintf("%sは廃止済みのプロトコルです。サーバー設定で無効化してください。", l.name),
+				Title:       msg.P(msg.SSLLegacyAcceptedTitle, "protocol", l.name),
+				Description: msg.P(msg.SSLLegacyAcceptedDesc, "protocol", l.name),
 			})
 		}
 	}

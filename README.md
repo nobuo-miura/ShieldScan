@@ -22,7 +22,26 @@ In addition to security header evaluation, it provides diagnostics for CORS, JWT
 Additional features:
 - Radar chart visualization of per-header scores
 - Improvement advice for each detected issue
+- English and Japanese interface
 - Scan history (latest 50 entries, newest first)
+
+## Language
+
+The interface is available in English and Japanese. On first load the language is taken from your browser
+settings; anything other than Japanese falls back to English. Use the EN / JA toggle in the top right to
+switch, and the choice is kept in `localStorage`.
+
+Scan findings are not translated on the server. The API returns a translation key plus any interpolated
+values, and the frontend dictionary resolves them, so switching the language also re-renders stored scan
+history in the new language.
+
+The dictionaries live in `frontend/src/i18n/locales/`. When you add or change a message, update all three:
+
+- the key constant and `AllKeys` in `backend/internal/msg/keys.go`
+- `frontend/src/i18n/locales/en.json`
+- `frontend/src/i18n/locales/ja.json`
+
+`go test ./internal/msg/` reports missing keys and mismatched placeholders.
 
 ## Tech Stack
 
@@ -122,11 +141,27 @@ Base URL depends on how you run it:
       "score": 15,
       "max_score": 20,
       "status": "warning",
-      "description": "...",
-      "advice": "..."
+      "description": { "key": "analyzer.header.hsts.desc" },
+      "advice": { "key": "analyzer.header.hsts.advice.no_preload" }
     }
   ]
 }
+```
+
+Human-readable text such as `description` and `advice` is returned as a translation key, with `params` when
+values need to be interpolated:
+
+```json
+{ "key": "analyzer.ssl.finding.cert_valid.title", "params": { "count": 57 } }
+```
+
+The matching text lives in `frontend/src/i18n/locales/`. `advice` is omitted when there is nothing to improve.
+
+Error responses use the same shape:
+
+```json
+// 400 Bad Request
+{ "error": { "key": "api.error.blocked_address", "params": { "ip": "169.254.169.254" } } }
 ```
 
 ### POST /api/cors — CORS Scan
@@ -182,11 +217,13 @@ shieldscan/
 │       │   ├── ssl.go      # SSL/TLS diagnostics
 │       │   └── cookie.go   # Cookie audit
 │       ├── handlers/       # HTTP handlers, rate limiting
+│       ├── msg/            # Translation keys for scan findings
 │       ├── safehttp/       # SSRF-resistant HTTP client and dialer
 │       └── models/         # In-memory history store
 ├── frontend/
 │   └── src/
-│       └── components/     # UI components for each scan tab
+│       ├── components/     # UI components for each scan tab
+│       └── i18n/           # Translation helpers and dictionaries (locales/en.json, ja.json)
 └── docker-compose.yml
 ```
 
