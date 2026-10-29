@@ -1,4 +1,7 @@
+import { useI18n } from '../i18n/i18n'
+
 export function ScoreRing({ score, max, grade }) {
+  const { t } = useI18n()
   const pct = max > 0 ? score / max : 0
   const radius = 48
   const circ = 2 * Math.PI * radius
@@ -32,7 +35,7 @@ export function ScoreRing({ score, max, grade }) {
           <span className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>{score}/{max}</span>
         </div>
       </div>
-      <span className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>セキュリティスコア</span>
+      <span className="font-mono text-xs" style={{ color: 'var(--text-muted)' }}>{t('ui.score.label')}</span>
     </div>
   )
 }

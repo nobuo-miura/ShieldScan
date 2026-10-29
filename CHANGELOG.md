@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- `internal/safehttp` now returns typed errors (`BlockedAddressError`, `UnresolvableHostError`) and sentinels for each rejection reason, so callers classify failures with `errors.Is`/`errors.As` instead of matching message text.
 - **SSRF protection rewritten.** The previous check resolved DNS once before the request and was bypassable by DNS rebinding, and redirects were followed without re-validation — a public host could simply redirect to `169.254.169.254`. The new `internal/safehttp` package validates the actual resolved IP in a `net.Dialer.Control` hook immediately before every TCP connection, so redirects and rebinding are both covered. Blocked ranges now also include CGNAT, IPv4-mapped IPv6, and other special-use networks.
 - `ScanCORS` followed redirects with no limit at all; all scanners now share the same capped, re-validated client.
 - Non-`http`/`https` redirect targets (`file://`, `gopher://`) are rejected.
@@ -28,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **English interface.** The UI is available in English and Japanese, detected from the browser on first load and switchable from a toggle in the header; the choice is stored in `localStorage` and reflected in `<html lang>`. Resolves the request in nobuo-miura/ShieldScan#18.
+- `internal/msg`, which defines every translation key the scanners emit, and a test that checks each one exists in both dictionaries with matching placeholders.
+- `frontend/src/api.js`, which centralizes the POST-and-decode logic the five scan tabs repeated and turns an error response into an `ApiError` carrying the translation key.
+- `frontend/src/i18n`, a small translation layer (dictionary lookup, `{{name}}` interpolation, `Intl.PluralRules` for counts, `Intl.DateTimeFormat` for dates) with no new runtime dependency.
 - GitHub Actions CI: gofmt, `go vet`, `go test -race` with coverage, `golangci-lint`, ESLint, frontend build, and a Docker Compose build plus smoke test that verifies a clean clone actually runs.
 - Dependabot for Go modules, npm, GitHub Actions, and Docker base images.
 - Tests for `internal/safehttp`, `internal/handlers`, and `internal/models`, covering SSRF blocking, rate limiting, and history behavior.
@@ -40,6 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: scan findings are returned as translation keys, not text.** `description`, `advice`, `title`, `test_name`, `detail`, `issues`, `parse_error` and `connect_error` are now objects of the form `{"key": "...", "params": {...}}` instead of Japanese strings, and the text lives in `frontend/src/i18n/locales/`. This keeps the server language-neutral, so switching the UI language also re-renders stored scan history. API clients that read those fields need updating.
+- **Breaking: error responses carry a translation key too.** `{"error": "invalid URL"}` is now `{"error": {"key": "api.error.invalid_url"}}`, with `params` where a value is interpolated (the rejected IP, the unresolvable host, the allowed method). Validation failures are mapped from typed errors in `internal/safehttp` rather than from error strings, so the client never has to parse English prose to tell cases apart.
+- **Breaking: `same_site` is an empty string when the attribute is absent**, instead of the Japanese literal `"未設定"`. The display text is now chosen by the client.
+- `advice` is omitted from the response when a header has nothing to improve, rather than being an empty string.
 - Scan functions (`Analyze`, `ScanCORS`, `AuditCookies`, `CheckSSL`) now take a `context.Context`, so a client disconnect cancels the outbound scan.
 - Frontend bundle is split into separate `recharts` and `react` chunks, improving cache reuse and clearing the 500 kB chunk warning.
 - `package.json` renamed from `security-header-analyzer` to `shieldscan-frontend`, with `package-lock.json` regenerated to match.

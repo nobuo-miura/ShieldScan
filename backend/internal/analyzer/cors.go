@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nobuo-miura/shieldscan/internal/msg"
 	"github.com/nobuo-miura/shieldscan/internal/safehttp"
 )
 
@@ -17,13 +18,13 @@ import (
 // Reflected が true かつ ACACPresent が true の場合、
 // クロスオリジンリクエストで認証情報が漏洩する危険があります。
 type CORSTestResult struct {
-	TestName    string `json:"test_name"`
-	Origin      string `json:"origin"`
-	Reflected   bool   `json:"reflected"`    // テスト用オリジンがACAOヘッダーに反射されたか
-	ACACPresent bool   `json:"acac_present"` // Access-Control-Allow-Credentials: true か
-	Severity    string `json:"severity"`     // "critical", "high", "info"
-	Description string `json:"description"`
-	Detail      string `json:"detail"`
+	TestName    msg.Message  `json:"test_name"`
+	Origin      string       `json:"origin"`
+	Reflected   bool         `json:"reflected"`    // テスト用オリジンがACAOヘッダーに反射されたか
+	ACACPresent bool         `json:"acac_present"` // Access-Control-Allow-Credentials: true か
+	Severity    string       `json:"severity"`     // "critical", "high", "info"
+	Description msg.Message  `json:"description"`
+	Detail      *msg.Message `json:"detail,omitempty"`
 }
 
 // CORSResult はCORSミスコンフィグ診断の総合結果を表します。
@@ -48,37 +49,37 @@ func ScanCORS(ctx context.Context, rawURL string) (*CORSResult, error) {
 	start := time.Now()
 
 	type testCase struct {
-		name        string
-		origin      string
-		severity    string
-		description string
+		nameKey  string
+		origin   string
+		severity string
+		descKey  string
 	}
 
 	host := extractHost(rawURL)
 	tests := []testCase{
 		{
-			name:        "任意オリジン反射",
-			origin:      "https://evil-attacker.com",
-			severity:    "critical",
-			description: "攻撃者のオリジンがACAOヘッダーにそのまま反射される場合、クロスオリジンリクエストで認証情報が盗まれる可能性があります。",
+			nameKey:  msg.CORSTestOriginReflectionName,
+			origin:   "https://evil-attacker.com",
+			severity: "critical",
+			descKey:  msg.CORSTestOriginReflectionDesc,
 		},
 		{
-			name:        "Nullオリジンバイパス",
-			origin:      "null",
-			severity:    "high",
-			description: "nullオリジンはsandboxed iframeから送信可能です。nullを信頼する設定は攻撃者に悪用されます。",
+			nameKey:  msg.CORSTestNullOriginName,
+			origin:   "null",
+			severity: "high",
+			descKey:  msg.CORSTestNullOriginDesc,
 		},
 		{
-			name:        "プレドメインマッチ",
-			origin:      fmt.Sprintf("https://evil-%s", host),
-			severity:    "high",
-			description: "前方一致でオリジン検証している場合、evil-victim.comのような偽ドメインが許可されます。",
+			nameKey:  msg.CORSTestPreDomainName,
+			origin:   fmt.Sprintf("https://evil-%s", host),
+			severity: "high",
+			descKey:  msg.CORSTestPreDomainDesc,
 		},
 		{
-			name:        "ポストドメインマッチ",
-			origin:      fmt.Sprintf("https://%s.evil.com", host),
-			severity:    "high",
-			description: "後方一致でオリジン検証している場合、victim.com.evil.comのような偽ドメインが許可されます。",
+			nameKey:  msg.CORSTestPostDomainName,
+			origin:   fmt.Sprintf("https://%s.evil.com", host),
+			severity: "high",
+			descKey:  msg.CORSTestPostDomainDesc,
 		},
 	}
 
@@ -98,13 +99,15 @@ func ScanCORS(ctx context.Context, rawURL string) (*CORSResult, error) {
 
 		resp, err := client.Do(req)
 		if err != nil {
+			// Go のエラー文字列は翻訳対象外とし、パラメータとしてそのまま埋め込む。
+			detail := msg.P(msg.CORSDetailRequestFailed, "error", err.Error())
 			results = append(results, CORSTestResult{
-				TestName:    tc.name,
+				TestName:    msg.M(tc.nameKey),
 				Origin:      tc.origin,
 				Reflected:   false,
 				Severity:    tc.severity,
-				Description: tc.description,
-				Detail:      "リクエスト失敗: " + err.Error(),
+				Description: msg.M(tc.descKey),
+				Detail:      &detail,
 			})
 			continue
 		}
@@ -118,19 +121,20 @@ func ScanCORS(ctx context.Context, rawURL string) (*CORSResult, error) {
 			vulnerable = true
 		}
 
-		detail := fmt.Sprintf("ACAO: %q", acao)
+		detailKey := msg.CORSDetailACAO
 		if acac {
-			detail += "  |  ACAC: true ⚠"
+			detailKey = msg.CORSDetailACAOWithACAC
 		}
+		detail := msg.P(detailKey, "acao", acao)
 
 		results = append(results, CORSTestResult{
-			TestName:    tc.name,
+			TestName:    msg.M(tc.nameKey),
 			Origin:      tc.origin,
 			Reflected:   reflected,
 			ACACPresent: acac,
 			Severity:    tc.severity,
-			Description: tc.description,
-			Detail:      detail,
+			Description: msg.M(tc.descKey),
+			Detail:      &detail,
 		})
 	}
 

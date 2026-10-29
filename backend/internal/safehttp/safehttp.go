@@ -29,9 +29,61 @@ import (
 	"time"
 )
 
-// ErrBlockedAddress は内部・プライベートアドレスへの接続を拒否したことを表します。
-// [errors.Is] で判定できます。
-var ErrBlockedAddress = errors.New("requests to private/internal addresses are not allowed")
+// 検証で返す番兵エラーです。呼び出し側は [errors.Is] で種類を判定し、
+// 利用者向けのメッセージに対応付けます。
+var (
+	// ErrBlockedAddress は内部・プライベートアドレスへの接続を拒否したことを表します。
+	ErrBlockedAddress = errors.New("requests to private/internal addresses are not allowed")
+	// ErrInvalidURL はURLとして解釈できなかったことを表します。
+	ErrInvalidURL = errors.New("invalid URL")
+	// ErrUnsupportedScheme は http/https 以外のスキームを指定されたことを表します。
+	ErrUnsupportedScheme = errors.New("unsupported URL scheme")
+	// ErrNoHost はURLにホストが含まれないことを表します。
+	ErrNoHost = errors.New("URL has no host")
+	// ErrHostRequired はホスト名が空であることを表します。
+	ErrHostRequired = errors.New("host is required")
+	// ErrUnresolvableHost はホスト名の名前解決に失敗したことを表します。
+	ErrUnresolvableHost = errors.New("failed to resolve host")
+)
+
+// BlockedAddressError は拒否した具体的なIPアドレスを保持します。
+// [ErrBlockedAddress] としても判定できます。
+type BlockedAddressError struct {
+	IP string
+}
+
+func (e *BlockedAddressError) Error() string {
+	return fmt.Sprintf("%s (%s)", ErrBlockedAddress.Error(), e.IP)
+}
+
+func (e *BlockedAddressError) Unwrap() error { return ErrBlockedAddress }
+
+// blockedAddress は拒否したIPを保持するエラーを生成します。
+func blockedAddress(ip net.IP) error {
+	return &BlockedAddressError{IP: ip.String()}
+}
+
+// UnresolvableHostError は名前解決に失敗したホスト名を保持します。
+// [ErrUnresolvableHost] としても判定でき、名前解決側のエラーも保持したままにします。
+type UnresolvableHostError struct {
+	Host string
+	Err  error // 名前解決のエラー。解決結果が空だった場合は nil。
+}
+
+func (e *UnresolvableHostError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("%s %q: %v", ErrUnresolvableHost.Error(), e.Host, e.Err)
+	}
+	return fmt.Sprintf("%s %q", ErrUnresolvableHost.Error(), e.Host)
+}
+
+// Unwrap は番兵エラーと原因エラーの両方を返し、どちらでも [errors.Is] で判定できるようにします。
+func (e *UnresolvableHostError) Unwrap() []error {
+	if e.Err == nil {
+		return []error{ErrUnresolvableHost}
+	}
+	return []error{ErrUnresolvableHost, e.Err}
+}
 
 // allowPrivateEnv はプライベートアドレスへの接続を許可する環境変数名です。
 // ローカル開発で localhost をスキャンしたい場合にのみ使用してください。
@@ -119,7 +171,7 @@ func control(_, address string, _ syscall.RawConn) error {
 		return fmt.Errorf("safehttp: unresolvable dial address %q", address)
 	}
 	if IsBlockedIP(ip) {
-		return fmt.Errorf("%w (%s)", ErrBlockedAddress, ip)
+		return blockedAddress(ip)
 	}
 	return nil
 }
@@ -166,7 +218,7 @@ func checkScheme(u *url.URL) error {
 	case "http", "https":
 		return nil
 	default:
-		return fmt.Errorf("unsupported URL scheme %q", u.Scheme)
+		return fmt.Errorf("%w %q", ErrUnsupportedScheme, u.Scheme)
 	}
 }
 
@@ -181,13 +233,13 @@ func checkScheme(u *url.URL) error {
 func ValidateURL(ctx context.Context, rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return fmt.Errorf("invalid URL: %w", err)
+		return fmt.Errorf("%w: %w", ErrInvalidURL, err)
 	}
 	if err := checkScheme(u); err != nil {
 		return err
 	}
 	if u.Hostname() == "" {
-		return errors.New("URL has no host")
+		return ErrNoHost
 	}
 	return ValidateHost(ctx, u.Hostname())
 }
@@ -197,24 +249,24 @@ func ValidateURL(ctx context.Context, rawURL string) error {
 // [ValidateURL] と同じく事前チェック用です。
 func ValidateHost(ctx context.Context, host string) error {
 	if host == "" {
-		return errors.New("host is required")
+		return ErrHostRequired
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		if IsBlockedIP(ip) {
-			return fmt.Errorf("%w (%s)", ErrBlockedAddress, ip)
+			return blockedAddress(ip)
 		}
 		return nil
 	}
 	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return fmt.Errorf("failed to resolve host: %w", err)
+		return &UnresolvableHostError{Host: host, Err: err}
 	}
 	if len(addrs) == 0 {
-		return fmt.Errorf("failed to resolve host: %s", host)
+		return &UnresolvableHostError{Host: host}
 	}
 	for _, addr := range addrs {
 		if IsBlockedIP(addr.IP) {
-			return fmt.Errorf("%w (%s)", ErrBlockedAddress, addr.IP)
+			return blockedAddress(addr.IP)
 		}
 	}
 	return nil

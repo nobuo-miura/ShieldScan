@@ -1,8 +1,9 @@
 package analyzer
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/nobuo-miura/shieldscan/internal/msg"
 )
 
 func TestToInt64(t *testing.T) {
@@ -29,8 +30,11 @@ func TestAnalyzeJWT_InvalidFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.ParseError == "" {
-		t.Error("expected ParseError for invalid JWT, got empty string")
+	if result.ParseError == nil {
+		t.Fatal("expected ParseError for invalid JWT, got nil")
+	}
+	if result.ParseError.Key != msg.JWTParseErrorInvalidParts {
+		t.Errorf("ParseError.Key = %q, want %q", result.ParseError.Key, msg.JWTParseErrorInvalidParts)
 	}
 }
 
@@ -43,7 +47,7 @@ func TestAnalyzeJWT_AlgNone(t *testing.T) {
 	}
 	found := false
 	for _, f := range result.Findings {
-		if f.Severity == "critical" && strings.Contains(f.Title, "none") {
+		if f.Severity == "critical" && f.Title.Key == msg.JWTAlgNoneTitle {
 			found = true
 			break
 		}
@@ -62,7 +66,7 @@ func TestAnalyzeJWT_NoExp(t *testing.T) {
 	}
 	found := false
 	for _, f := range result.Findings {
-		if f.Severity == "high" && strings.Contains(f.Title, "exp") {
+		if f.Severity == "high" && f.Title.Key == msg.JWTNoExpTitle {
 			found = true
 			break
 		}
@@ -70,4 +74,25 @@ func TestAnalyzeJWT_NoExp(t *testing.T) {
 	if !found {
 		t.Error("expected high finding for missing exp claim, but not found")
 	}
+}
+
+// TestAnalyzeJWT_ParamsAreEmbedded はパラメータ付きメッセージに
+// 差し込み値が載ることを確認します。
+func TestAnalyzeJWT_ParamsAreEmbedded(t *testing.T) {
+	// header: {"alg":"HS256","typ":"JWT"}, payload: {"sub":"1"} (no exp)
+	token := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.abc"
+	result, err := AnalyzeJWT(token)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, f := range result.Findings {
+		if f.Title.Key != msg.JWTAlgSymmetricTitle {
+			continue
+		}
+		if got := f.Title.Params["alg"]; got != "HS256" {
+			t.Errorf("params[alg] = %v, want HS256", got)
+		}
+		return
+	}
+	t.Errorf("expected a %s finding, but not found", msg.JWTAlgSymmetricTitle)
 }

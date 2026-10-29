@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react'
 
+import { useI18n } from '../i18n/i18n'
+
 const gradeColor = {
   'A+': '#00ff87', A: '#00ff87', B: '#00e5ff', C: '#ffcc00', D: '#ff9944', F: '#ff4466'
 }
 
 export function HistorySidebar({ onSelect, refreshTrigger }) {
+  const { t } = useI18n()
   const [history, setHistory] = useState([])
 
   useEffect(() => {
@@ -22,7 +25,7 @@ export function HistorySidebar({ onSelect, refreshTrigger }) {
       style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}
     >
       <h3 className="font-mono text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
-        ── 過去のスキャン ──
+        {t('ui.history.heading')}
       </h3>
       <div className="flex flex-col gap-2">
         {history.map(entry => (

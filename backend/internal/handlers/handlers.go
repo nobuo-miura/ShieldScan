@@ -11,6 +11,7 @@ import (
 
 	"github.com/nobuo-miura/shieldscan/internal/analyzer"
 	"github.com/nobuo-miura/shieldscan/internal/models"
+	"github.com/nobuo-miura/shieldscan/internal/msg"
 	"github.com/nobuo-miura/shieldscan/internal/safehttp"
 )
 
@@ -42,9 +43,48 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
-// writeError は {"error": msg} 形式のJSONエラーレスポンスを返すヘルパーです。
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+// writeError は {"error": {"key": ..., "params": ...}} 形式のJSONエラーレスポンスを返します。
+// 本文は訳文ではなく翻訳キーで、文言はクライアント側の辞書で解決されます。
+func writeError(w http.ResponseWriter, status int, message msg.Message) {
+	writeJSON(w, status, map[string]msg.Message{"error": message})
+}
+
+// methodNotAllowed は許可されていないHTTPメソッドのリクエストを拒否します。
+func methodNotAllowed(w http.ResponseWriter, allowed string) {
+	writeError(w, http.StatusMethodNotAllowed, msg.P(msg.APIMethodNotAllowed, "allowed", allowed))
+}
+
+// validationMessage はスキャン対象の検証エラーを翻訳キーに対応付けます。
+func validationMessage(err error) msg.Message {
+	var blocked *safehttp.BlockedAddressError
+	if errors.As(err, &blocked) {
+		return msg.P(msg.APIBlockedAddress, "ip", blocked.IP)
+	}
+
+	var unresolvable *safehttp.UnresolvableHostError
+	if errors.As(err, &unresolvable) {
+		return msg.P(msg.APIResolveFailed, "host", unresolvable.Host)
+	}
+
+	switch {
+	case errors.Is(err, safehttp.ErrUnsupportedScheme):
+		return msg.M(msg.APIUnsupportedScheme)
+	case errors.Is(err, safehttp.ErrNoHost):
+		return msg.M(msg.APINoHost)
+	case errors.Is(err, safehttp.ErrHostRequired):
+		return msg.M(msg.APIHostRequired)
+	case errors.Is(err, safehttp.ErrInvalidURL):
+		return msg.M(msg.APIInvalidURL)
+	default:
+		// 想定外の検証エラー。原因はGoのエラー文字列のまま載せる（翻訳対象外）。
+		return msg.P(msg.APIValidationFailed, "reason", err.Error())
+	}
+}
+
+// scanFailed はスキャンの実行に失敗したことを表すメッセージを返します。
+// 原因はGoのエラー文字列のままで、翻訳対象外です。
+func scanFailed(err error) msg.Message {
+	return msg.P(msg.APIScanFailed, "reason", err.Error())
 }
 
 // parseURL はリクエストボディからURLを取得し、正規化・検証して返します。
@@ -83,21 +123,21 @@ func parseURL(r *http.Request) (string, error) {
 // スキャン結果は自動的にスキャン履歴に保存されます。
 func AnalyzeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	rawURL, err := parseURL(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid URL")
+		writeError(w, http.StatusBadRequest, msg.M(msg.APIInvalidURL))
 		return
 	}
 	if err := safehttp.ValidateURL(r.Context(), rawURL); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, validationMessage(err))
 		return
 	}
 	result, err := analyzer.Analyze(r.Context(), rawURL)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		writeError(w, http.StatusBadGateway, scanFailed(err))
 		return
 	}
 	models.Store.Add(result)
@@ -112,7 +152,7 @@ func AnalyzeHandler(w http.ResponseWriter, r *http.Request) {
 // 各エントリーの詳細フィールド (result) は含まれません。
 func HistoryHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		methodNotAllowed(w, http.MethodGet)
 		return
 	}
 	writeJSON(w, http.StatusOK, models.Store.List())
@@ -128,21 +168,21 @@ func HistoryHandler(w http.ResponseWriter, r *http.Request) {
 // 任意オリジン反射・Nullオリジン・ドメイン前後一致などの脆弱パターンをテストします。
 func CORSHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	rawURL, err := parseURL(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid URL")
+		writeError(w, http.StatusBadRequest, msg.M(msg.APIInvalidURL))
 		return
 	}
 	if err := safehttp.ValidateURL(r.Context(), rawURL); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, validationMessage(err))
 		return
 	}
 	result, err := analyzer.ScanCORS(r.Context(), rawURL)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		writeError(w, http.StatusBadGateway, scanFailed(err))
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -158,19 +198,19 @@ func CORSHandler(w http.ResponseWriter, r *http.Request) {
 // alg:none・kid インジェクション・有効期限・機密情報の混入などをチェックします。
 func JWTHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	var body struct {
 		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Token) == "" {
-		writeError(w, http.StatusBadRequest, "token is required")
+		writeError(w, http.StatusBadRequest, msg.M(msg.APIJWTRequired))
 		return
 	}
 	result, err := analyzer.AnalyzeJWT(strings.TrimSpace(body.Token))
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		writeError(w, http.StatusBadGateway, scanFailed(err))
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -187,7 +227,7 @@ func JWTHandler(w http.ResponseWriter, r *http.Request) {
 // TLSバージョン・証明書有効期限・暗号スイート・ホスト名一致などを検査します。
 func SSLHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	var body struct {
@@ -195,7 +235,7 @@ func SSLHandler(w http.ResponseWriter, r *http.Request) {
 		Port string `json:"port"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Host) == "" {
-		writeError(w, http.StatusBadRequest, "host is required")
+		writeError(w, http.StatusBadRequest, msg.M(msg.APIHostRequired))
 		return
 	}
 	host := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(body.Host), "https://"), "http://")
@@ -203,12 +243,12 @@ func SSLHandler(w http.ResponseWriter, r *http.Request) {
 		host = host[:idx]
 	}
 	if err := safehttp.ValidateHost(r.Context(), host); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, validationMessage(err))
 		return
 	}
 	result, err := analyzer.CheckSSL(r.Context(), host, body.Port)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		writeError(w, http.StatusBadGateway, scanFailed(err))
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -224,21 +264,21 @@ func SSLHandler(w http.ResponseWriter, r *http.Request) {
 // Secure・HttpOnly・SameSite フラグの有無、機密Cookieの識別などをチェックします。
 func CookieHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	rawURL, err := parseURL(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid URL")
+		writeError(w, http.StatusBadRequest, msg.M(msg.APIInvalidURL))
 		return
 	}
 	if err := safehttp.ValidateURL(r.Context(), rawURL); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusBadRequest, validationMessage(err))
 		return
 	}
 	result, err := analyzer.AuditCookies(r.Context(), rawURL)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		writeError(w, http.StatusBadGateway, scanFailed(err))
 		return
 	}
 	writeJSON(w, http.StatusOK, result)

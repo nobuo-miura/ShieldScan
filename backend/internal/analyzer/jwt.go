@@ -5,9 +5,10 @@ package analyzer
 import (
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"time"
+
+	"github.com/nobuo-miura/shieldscan/internal/msg"
 )
 
 // JWTFinding はJWT解析で検出された1件のセキュリティ問題を表します。
@@ -18,14 +19,14 @@ import (
 //   - "warning"  — 注意が必要な問題
 //   - "info"     — 情報提供（問題ではない場合も含む）
 type JWTFinding struct {
-	Severity    string `json:"severity"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
+	Severity    string      `json:"severity"`
+	Title       msg.Message `json:"title"`
+	Description msg.Message `json:"description"`
 }
 
 // JWTResult はJWT解析の総合結果を表します。
 //
-// ParseError が空でない場合は解析に失敗しており、他のフィールドは信頼できません。
+// ParseError が nil でない場合は解析に失敗しており、他のフィールドは信頼できません。
 // IssuedAt・ExpiresAt はフロントエンド表示用のフォーマット済み文字列です。
 type JWTResult struct {
 	Raw        string                 `json:"raw"`
@@ -33,7 +34,7 @@ type JWTResult struct {
 	Payload    map[string]interface{} `json:"payload"`
 	Findings   []JWTFinding           `json:"findings"`
 	ScannedAt  time.Time              `json:"scanned_at"`
-	ParseError string                 `json:"parse_error,omitempty"`
+	ParseError *msg.Message           `json:"parse_error,omitempty"`
 	IssuedAt   string                 `json:"issued_at,omitempty"`  // iat クレームの表示用文字列
 	ExpiresAt  string                 `json:"expires_at,omitempty"` // exp クレームの表示用文字列
 	Expired    bool                   `json:"expired"`
@@ -54,21 +55,18 @@ func AnalyzeJWT(token string) (*JWTResult, error) {
 	token = strings.TrimSpace(token)
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return &JWTResult{
-			Raw:        token,
-			ParseError: "JWTは3つのパート（header.payload.signature）で構成される必要があります",
-			ScannedAt:  time.Now(),
-		}, nil
+		return newJWTParseError(token, msg.M(msg.JWTParseErrorInvalidParts)), nil
 	}
 
 	header, err := decodeJWTPart(parts[0])
 	if err != nil {
-		return &JWTResult{Raw: token, ParseError: "ヘッダーのデコードに失敗: " + err.Error(), ScannedAt: time.Now()}, nil
+		// Go のエラー文字列は翻訳対象外とし、パラメータとしてそのまま埋め込む。
+		return newJWTParseError(token, msg.P(msg.JWTParseErrorHeaderDecode, "error", err.Error())), nil
 	}
 
 	payload, err := decodeJWTPart(parts[1])
 	if err != nil {
-		return &JWTResult{Raw: token, ParseError: "ペイロードのデコードに失敗: " + err.Error(), ScannedAt: time.Now()}, nil
+		return newJWTParseError(token, msg.P(msg.JWTParseErrorPayloadDecode, "error", err.Error())), nil
 	}
 
 	findings := []JWTFinding{}
@@ -79,20 +77,20 @@ func AnalyzeJWT(token string) (*JWTResult, error) {
 	case "none", "":
 		findings = append(findings, JWTFinding{
 			Severity:    "critical",
-			Title:       "alg: none — 署名検証なし",
-			Description: "alg=noneはJWTの署名検証をスキップします。攻撃者がペイロードを自由に改ざんできます（CVE-2015-9235相当）。",
+			Title:       msg.M(msg.JWTAlgNoneTitle),
+			Description: msg.M(msg.JWTAlgNoneDesc),
 		})
 	case "hs256", "hs384", "hs512":
 		findings = append(findings, JWTFinding{
 			Severity:    "info",
-			Title:       fmt.Sprintf("対称鍵アルゴリズム使用: %s", alg),
-			Description: "HMACアルゴリズムは秘密鍵の強度に依存します。弱い鍵はブルートフォース攻撃に脆弱です。RS256/ES256への移行を検討してください。",
+			Title:       msg.P(msg.JWTAlgSymmetricTitle, "alg", alg),
+			Description: msg.M(msg.JWTAlgSymmetricDesc),
 		})
 	case "rs256", "es256", "ps256":
 		findings = append(findings, JWTFinding{
 			Severity:    "info",
-			Title:       fmt.Sprintf("非対称鍵アルゴリズム使用: %s", alg),
-			Description: "公開鍵暗号方式を使用しています。アルゴリズム混同攻撃（RS256→HS256）に注意してください。",
+			Title:       msg.P(msg.JWTAlgAsymmetricTitle, "alg", alg),
+			Description: msg.M(msg.JWTAlgAsymmetricDesc),
 		})
 	}
 
@@ -103,8 +101,8 @@ func AnalyzeJWT(token string) (*JWTResult, error) {
 			if strings.Contains(kid, s) {
 				findings = append(findings, JWTFinding{
 					Severity:    "critical",
-					Title:       "kid インジェクション疑い",
-					Description: fmt.Sprintf("kidフィールドに不審な文字列が含まれています: %q。SQLインジェクションやパストラバーサルが可能な場合があります。", kid),
+					Title:       msg.M(msg.JWTKidInjectionTitle),
+					Description: msg.P(msg.JWTKidInjectionDesc, "kid", kid),
 				})
 				break
 			}
@@ -124,21 +122,21 @@ func AnalyzeJWT(token string) (*JWTResult, error) {
 			expired = true
 			findings = append(findings, JWTFinding{
 				Severity:    "warning",
-				Title:       "トークン期限切れ",
-				Description: fmt.Sprintf("expクレームが過去の時刻です（%s）。期限切れトークンが受け入れられている場合、セキュリティリスクがあります。", expiresAt),
+				Title:       msg.M(msg.JWTExpiredTitle),
+				Description: msg.P(msg.JWTExpiredDesc, "expires_at", expiresAt),
 			})
 		} else if exp-now > 86400*30 {
 			findings = append(findings, JWTFinding{
 				Severity:    "warning",
-				Title:       "有効期限が長すぎる",
-				Description: fmt.Sprintf("トークンの有効期限が30日以上です（%s）。短い有効期限を推奨します。", expiresAt),
+				Title:       msg.M(msg.JWTLongExpiryTitle),
+				Description: msg.P(msg.JWTLongExpiryDesc, "expires_at", expiresAt),
 			})
 		}
 	} else {
 		findings = append(findings, JWTFinding{
 			Severity:    "high",
-			Title:       "exp クレームなし",
-			Description: "有効期限（exp）が設定されていません。トークンが永続的に有効となり、漏洩時のリスクが高まります。",
+			Title:       msg.M(msg.JWTNoExpTitle),
+			Description: msg.M(msg.JWTNoExpDesc),
 		})
 	}
 
@@ -149,10 +147,11 @@ func AnalyzeJWT(token string) (*JWTResult, error) {
 	// --- nbf check ---
 	if nbf, ok := toInt64(payload["nbf"]); ok {
 		if nbf > now {
+			notBefore := time.Unix(nbf, 0).Format("2006-01-02 15:04:05")
 			findings = append(findings, JWTFinding{
 				Severity:    "warning",
-				Title:       "nbf が未来の時刻",
-				Description: fmt.Sprintf("nbf（Not Before）が未来の時刻（%s）です。このトークンはまだ有効ではありません。", time.Unix(nbf, 0).Format("2006-01-02 15:04:05")),
+				Title:       msg.M(msg.JWTNbfFutureTitle),
+				Description: msg.P(msg.JWTNbfFutureDesc, "not_before", notBefore),
 			})
 		}
 	}
@@ -164,8 +163,8 @@ func AnalyzeJWT(token string) (*JWTResult, error) {
 			if strings.Contains(strings.ToLower(pk), k) {
 				findings = append(findings, JWTFinding{
 					Severity:    "high",
-					Title:       fmt.Sprintf("機密情報がペイロードに含まれている可能性: %q", pk),
-					Description: "JWTのペイロードはBase64エンコードされているだけで暗号化されていません。機密情報はペイロードに含めないでください。",
+					Title:       msg.P(msg.JWTSensitiveClaimTitle, "claim", pk),
+					Description: msg.M(msg.JWTSensitiveClaimDesc),
 				})
 			}
 		}
@@ -174,8 +173,8 @@ func AnalyzeJWT(token string) (*JWTResult, error) {
 	if len(findings) == 0 {
 		findings = append(findings, JWTFinding{
 			Severity:    "info",
-			Title:       "明らかな問題は検出されませんでした",
-			Description: "静的解析の範囲では問題が見つかりませんでした。署名の実際の検証はサーバー側で行ってください。",
+			Title:       msg.M(msg.JWTNoIssuesTitle),
+			Description: msg.M(msg.JWTNoIssuesDesc),
 		})
 	}
 
@@ -189,6 +188,15 @@ func AnalyzeJWT(token string) (*JWTResult, error) {
 		ExpiresAt: expiresAt,
 		Expired:   expired,
 	}, nil
+}
+
+// newJWTParseError はパース失敗を表す [JWTResult] を組み立てます。
+func newJWTParseError(token string, parseError msg.Message) *JWTResult {
+	return &JWTResult{
+		Raw:        token,
+		ParseError: &parseError,
+		ScannedAt:  time.Now(),
+	}
 }
 
 // decodeJWTPart はJWTのヘッダーまたはペイロード部分（Base64URLエンコード）をデコードして

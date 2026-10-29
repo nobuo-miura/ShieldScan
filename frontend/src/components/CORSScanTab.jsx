@@ -1,14 +1,18 @@
 import { useState } from 'react'
 
+import { useI18n } from '../i18n/i18n'
+import { errorMessage, postJSON } from '../api'
+
 function TestRow({ test }) {
+  const { t, tm } = useI18n()
   const [open, setOpen] = useState(false)
 
   const statusColor = test.reflected
     ? (test.acac_present ? 'var(--red)' : 'var(--yellow)')
     : 'var(--green)'
   const statusLabel = test.reflected
-    ? (test.acac_present ? '🔴 脆弱' : '⚠️ 反射あり')
-    : '✅ 安全'
+    ? (test.acac_present ? `🔴 ${t('ui.cors.test_status.vulnerable')}` : `⚠️ ${t('ui.cors.test_status.reflected')}`)
+    : `✅ ${t('ui.cors.test_status.safe')}`
 
   return (
     <div
@@ -18,7 +22,7 @@ function TestRow({ test }) {
     >
       <div className="flex items-center gap-3 p-4">
         <span className="font-mono text-xs font-bold shrink-0" style={{ color: statusColor }}>{statusLabel}</span>
-        <span className="font-sans text-sm font-bold flex-1" style={{ color: 'var(--text)' }}>{test.test_name}</span>
+        <span className="font-sans text-sm font-bold flex-1" style={{ color: 'var(--text)' }}>{tm(test.test_name)}</span>
         <code className="font-mono text-xs hidden md:block" style={{ color: 'var(--text-muted)' }}>
           {test.origin.replace('https://', '')}
         </code>
@@ -31,10 +35,10 @@ function TestRow({ test }) {
           </code>
           {test.detail && (
             <code className="block text-xs p-2 rounded mb-3 break-all" style={{ background: 'var(--bg)', color: 'var(--text-muted)', fontFamily: '"Space Mono", monospace' }}>
-              {test.detail}
+              {tm(test.detail)}
             </code>
           )}
-          <p className="text-sm" style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>{test.description}</p>
+          <p className="text-sm" style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>{tm(test.description)}</p>
         </div>
       )}
     </div>
@@ -42,6 +46,7 @@ function TestRow({ test }) {
 }
 
 export function CORSScanTab() {
+  const { t, tm } = useI18n()
   const [url, setUrl] = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
@@ -51,22 +56,16 @@ export function CORSScanTab() {
     if (!url.trim()) return
     setLoading(true); setError(''); setResult(null)
     try {
-      const res = await fetch('/api/cors', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: url.trim() }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error ?? 'Unknown error')
+      const data = await postJSON('/api/cors', { url: url.trim() })
       setResult(data)
-    } catch (e) { setError(e.message) }
+    } catch (e) { setError(errorMessage(e)) }
     finally { setLoading(false) }
   }
 
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-        4種類のオリジンパターンでCORSポリシーをテストします。
+        {t('ui.cors.intro')}
       </p>
 
       <div className="flex gap-2">
@@ -77,11 +76,11 @@ export function CORSScanTab() {
         <button onClick={scan} disabled={loading || !url.trim()}
           className="px-5 py-3 rounded-lg font-sans font-bold text-sm disabled:opacity-40"
           style={{ background: 'var(--accent)', color: '#000' }}>
-          {loading ? 'スキャン中...' : 'スキャン'}
+          {loading ? t('ui.action.scanning') : t('ui.action.scan')}
         </button>
       </div>
 
-      {error && <div className="p-3 rounded-lg font-mono text-sm" style={{ background: 'var(--red-dim)', color: 'var(--red)' }}>✗ {error}</div>}
+      {error && <div className="p-3 rounded-lg font-mono text-sm" style={{ background: 'var(--red-dim)', color: 'var(--red)' }}>✗ {tm(error)}</div>}
 
       {result && (
         <div className="flex flex-col gap-3">
@@ -89,12 +88,12 @@ export function CORSScanTab() {
             <span className="text-2xl">{result.vulnerable ? '🔴' : '✅'}</span>
             <div>
               <div className="font-sans font-bold" style={{ color: result.vulnerable ? 'var(--red)' : 'var(--green)' }}>
-                {result.vulnerable ? 'CORS脆弱性が検出されました' : 'CORSの設定は安全です'}
+                {result.vulnerable ? t('ui.cors.result.vulnerable') : t('ui.cors.result.safe')}
               </div>
               <div className="font-mono text-xs mt-1" style={{ color: 'var(--text-muted)' }}>{result.response_time_ms}ms</div>
             </div>
           </div>
-          {result.tests.map((t, i) => <TestRow key={i} test={t} />)}
+          {result.tests.map((test, i) => <TestRow key={i} test={test} />)}
         </div>
       )}
     </div>
